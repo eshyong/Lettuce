@@ -1,1 +1,3 @@
 *.swp
+server/server
+client/cli

@@ -4,51 +4,74 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"os"
-	"time"
 )
 
-func DoStuff(conn net.Conn) {
-	message := make([]byte, 1024)
-	reply := []byte("yo")
-	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(10 * time.Hour))
-	for {
-		// Read endlessly from client and echo on screen
-		_, err := fmt.Fscan(conn, &message)
-		if err != nil {
-			log.Println("Fscan: " + err.Error())
-			return
-		}
-		if message[0] != 0 {
-			fmt.Println(os.Stdout, string(message))
-			_, err = fmt.Fprint(conn, reply)
-			if err != nil {
-				log.Println("Fprint: " + err.Error())
-				return
-			}
-		}
-		message[0] = 0
-	}
+type Server struct {
+	input    chan string
+	listener net.Listener
+	// commands map[string]func(something)
 }
 
-func Serve() {
-	listener, err := net.Listen("tcp", ":8000")
+func newServer() *Server {
+	l, err := net.Listen("tcp", ":8000")
 	if err != nil {
 		log.Fatal(err)
 	}
+	server := &Server{input: make(chan string, 1024), listener: l}
+	return server
+}
+
+func (server *Server) serve() {
+	// Make sure listener gets cleaned up
+	defer server.listener.Close()
+
 	for {
 		// Get a connection
-		conn, err := listener.Accept()
+		conn, err := server.listener.Accept()
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		// Set read deadline
-		go DoStuff(conn)
+		// Handle client session
+		go server.session(conn)
 	}
 }
 
+func (server *Server) session(conn net.Conn) {
+	defer conn.Close()
+	go server.getInput(conn)
+	for {
+		select {
+		case command, ok := <-server.input:
+			if !ok {
+				return
+			}
+			server.runCommand(command)
+		}
+	}
+}
+
+func (server *Server) getInput(conn net.Conn) {
+	message := make([]byte, 1024)
+	defer conn.Close()
+	for {
+		n, err := conn.Read(message)
+		if n == 0 {
+			fmt.Printf("client %v has disconnnected.\n", conn.LocalAddr())
+			return
+		}
+		if err != nil {
+			fmt.Println(err)
+		}
+		server.input <- string(message)
+	}
+}
+
+func (server *Server) runCommand(command string) {
+	// Do something here
+}
+
 func main() {
-	Serve()
+	server := newServer()
+	server.serve()
 }
