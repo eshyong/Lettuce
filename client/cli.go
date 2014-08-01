@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"log"
 	"net"
+	"os"
 )
 
 type Client struct {
@@ -51,10 +53,14 @@ func (client *Client) run() {
 
 func (client *Client) getInput() {
 	// Send a message from Stdin through a gochannel.
-	var input string
 	defer close(client.outbound)
+	reader := bufio.NewReader(os.Stdin)
 	for client.running {
-		fmt.Scanln(&input)
+		fmt.Print("> ")
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			log.Println(err)
+		}
 		client.outbound <- input
 	}
 }

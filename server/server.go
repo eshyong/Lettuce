@@ -65,17 +65,15 @@ func (server *Server) getInput(conn net.Conn) {
 			fmt.Println(err)
 		}
 		server.input <- string(command)
-		i := 0
-		for ; command[i] != 0; i++ {
+		for i := 0; command[i] != 0; i++ {
 			command[i] = 0
 		}
-		fmt.Println(i)
 	}
 }
 
 func (server *Server) runCommand(command string) {
 	// Do something here
-	fmt.Println("user cmd: " + command)
+	fmt.Print("user cmd: " + command)
 }
 
 func main() {
