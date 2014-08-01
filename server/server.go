@@ -52,10 +52,11 @@ func (server *Server) session(conn net.Conn) {
 }
 
 func (server *Server) getInput(conn net.Conn) {
-	message := make([]byte, 1024)
+	// Make sure connection socket gets cleaned up.
 	defer conn.Close()
+	command := make([]byte, 1024)
 	for {
-		n, err := conn.Read(message)
+		n, err := conn.Read(command)
 		if n == 0 {
 			fmt.Printf("client %v has disconnnected.\n", conn.LocalAddr())
 			return
@@ -63,12 +64,18 @@ func (server *Server) getInput(conn net.Conn) {
 		if err != nil {
 			fmt.Println(err)
 		}
-		server.input <- string(message)
+		server.input <- string(command)
+		i := 0
+		for ; command[i] != 0; i++ {
+			command[i] = 0
+		}
+		fmt.Println(i)
 	}
 }
 
 func (server *Server) runCommand(command string) {
 	// Do something here
+	fmt.Println("user cmd: " + command)
 }
 
 func main() {

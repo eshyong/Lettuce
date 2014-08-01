@@ -10,6 +10,7 @@ type Client struct {
 	outbound chan string
 	inbound  chan string
 	conn     net.Conn
+	running  bool
 }
 
 func newClient() *Client {
@@ -17,11 +18,60 @@ func newClient() *Client {
 	if err != nil {
 		log.Fatal(err)
 	}
-	client := &Client{outbound: make(chan string), inbound: make(chan string), conn: c}
+	client := &Client{outbound: make(chan string), inbound: make(chan string), conn: c, running: true}
 	return client
 }
 
+func (client *Client) run() {
+	// Make sure connection socket gets cleaned up.
+	defer client.conn.Close()
+
+	// Set up goroutines for reading user input and sending over the wire.
+	go client.getMessage()
+	go client.getInput()
+
+	// Event loop
+	for client.running {
+		select {
+		case message, ok := <-client.inbound:
+			if !ok {
+				client.running = false
+				return
+			}
+			fmt.Println(string(message))
+		case input, ok := <-client.outbound:
+			if !ok {
+				client.running = false
+				return
+			}
+			go client.sendMessage(input)
+		}
+	}
+}
+
+func (client *Client) getInput() {
+	// Send a message from Stdin through a gochannel.
+	var input string
+	defer close(client.outbound)
+	for client.running {
+		fmt.Scanln(&input)
+		client.outbound <- input
+	}
+}
+
+func (client *Client) sendMessage(message string) {
+	// Send commands to the server through a TCPConn.
+	n, err := client.conn.Write([]byte(message))
+	if n == 0 {
+		fmt.Println("Server disconnected")
+	}
+	if err != nil {
+		fmt.Println(err)
+	}
+}
+
 func (client *Client) getMessage() {
+	// Receive messages from the server.
 	message := make([]byte, 1024)
 	defer close(client.inbound)
 	for {
@@ -34,32 +84,8 @@ func (client *Client) getMessage() {
 			fmt.Println(err)
 			break
 		}
+		// Send server messages over gochannel.
 		client.inbound <- string(message)
-	}
-}
-
-func (client *Client) getInput() {
-	var input string
-	for {
-		fmt.Scanln(input)
-		client.outbound <- input
-	}
-}
-
-func (client *Client) run() {
-	defer client.conn.Close()
-	go client.getMessage()
-	go client.getInput()
-	for {
-		select {
-		case message, ok := <-client.inbound:
-			if !ok {
-				return
-			}
-			fmt.Println(string(message))
-			//		case input, ok := <-client.outbound:
-			//			client.sendMessage()
-		}
 	}
 }
 
