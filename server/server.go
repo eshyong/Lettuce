@@ -1,15 +1,24 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"log"
 	"net"
+
+	"github.com/eshyong/lettuce/db"
 )
 
 type Server struct {
-	input    chan string
 	listener net.Listener
-	// commands map[string]func(something)
+	store    *db.Store
+}
+
+type Session struct {
+	input  chan string
+	output chan string
+	conn   net.Conn
 }
 
 func newServer() *Server {
@@ -17,63 +26,97 @@ func newServer() *Server {
 	if err != nil {
 		log.Fatal(err)
 	}
-	server := &Server{input: make(chan string, 1024), listener: l}
-	return server
+	return &Server{listener: l,
+		store: db.NewStore()}
+}
+
+func newSession(c net.Conn) *Session {
+	return &Session{input: make(chan string, 1024),
+		output: make(chan string, 1024),
+		conn:   c}
 }
 
 func (server *Server) serve() {
 	// Make sure listener gets cleaned up
 	defer server.listener.Close()
-
 	for {
 		// Get a connection
 		conn, err := server.listener.Accept()
 		if err != nil {
 			log.Fatal(err)
 		}
-
 		// Handle client session
-		go server.session(conn)
+		session := newSession(conn)
+		c := session.run()
+		go server.handleRequests(c)
 	}
 }
 
-func (server *Server) session(conn net.Conn) {
-	defer conn.Close()
-	go server.getInput(conn)
+func (server *Server) handleRequests(c chan string) {
 	for {
-		select {
-		case command, ok := <-server.input:
-			if !ok {
-				return
-			}
-			server.runCommand(command)
-		}
-	}
-}
-
-func (server *Server) getInput(conn net.Conn) {
-	// Make sure connection socket gets cleaned up.
-	defer conn.Close()
-	command := make([]byte, 1024)
-	for {
-		n, err := conn.Read(command)
-		if n == 0 {
-			fmt.Printf("client %v has disconnnected.\n", conn.LocalAddr())
+		request, ok := <-c
+		if !ok {
 			return
 		}
+		val, err := server.store.Execute(request)
 		if err != nil {
-			fmt.Println(err)
+			val = err.Error()
 		}
-		server.input <- string(command)
-		for i := 0; command[i] != 0; i++ {
-			command[i] = 0
-		}
+		c <- val
 	}
 }
 
-func (server *Server) runCommand(command string) {
-	// Do something here
-	fmt.Print("user cmd: " + command)
+func (session *Session) run() chan string {
+	defer session.conn.Close()
+	go session.getInput()
+
+	c := make(chan string)
+	go func() {
+		for {
+			select {
+			case command, ok := <-session.input:
+				if !ok {
+					return
+				}
+				fmt.Print("command: " + command)
+				fmt.Println("sendRequest(command)")
+				c <- command
+			case reply, ok := <-session.output:
+				if !ok {
+					return
+				}
+				fmt.Println("sendReply(reply)")
+				go session.sendReply(reply)
+			}
+		}
+	}()
+	return c
+}
+
+func (session *Session) getInput() {
+	// Make sure connection socket gets cleaned up.
+	reader := bufio.NewReader(session.conn)
+	for {
+		command, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				fmt.Printf("client at %v disconnected: ", session.conn.RemoteAddr())
+			}
+			fmt.Println(err)
+			return
+		}
+		session.input <- command
+	}
+}
+
+func (session *Session) sendReply(reply string) {
+	n, err := session.conn.Write([]byte(reply))
+	if n == 0 {
+		fmt.Println("client disconnected")
+	}
+	if err != nil {
+		fmt.Println(err)
+	}
 }
 
 func main() {
