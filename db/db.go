@@ -34,9 +34,14 @@ func (store *Store) Execute(request string) (string, error) {
 	return store.dispatch(request)
 }
 
-func (store *Store) dispatch(command string) (string, error) {
-	args := strings.Split(command, " ")
-	return funcmap[args[0]](args[1:], store)
+func (store *Store) dispatch(request string) (string, error) {
+	fmt.Println("dispatch")
+	args := strings.Split(request, " ")
+	exec, ok := funcmap[args[0]]
+	if !ok {
+		return "", errors.New("no such function")
+	}
+	return exec(args[1:], store)
 }
 
 func getValue(args []string, store *Store) (string, error) {

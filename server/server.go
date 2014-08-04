@@ -67,11 +67,12 @@ func (server *Server) handleRequests(c chan string) {
 }
 
 func (session *Session) run() chan string {
-	defer session.conn.Close()
 	go session.getInput()
 
 	c := make(chan string)
 	go func() {
+		defer session.conn.Close()
+		defer close(c)
 		for {
 			select {
 			case command, ok := <-session.input:
@@ -102,6 +103,7 @@ func (session *Session) getInput() {
 			if err == io.EOF {
 				fmt.Printf("client at %v disconnected: ", session.conn.RemoteAddr())
 			}
+			fmt.Println("is going on")
 			fmt.Println(err)
 			return
 		}
@@ -115,6 +117,7 @@ func (session *Session) sendReply(reply string) {
 		fmt.Println("client disconnected")
 	}
 	if err != nil {
+		fmt.Println("wat")
 		fmt.Println(err)
 	}
 }
