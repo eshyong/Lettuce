@@ -43,8 +43,10 @@ func (server *Server) serve() {
 		// Get a connection
 		conn, err := server.listener.Accept()
 		if err != nil {
-			log.Fatal(err)
+			fmt.Println(err)
 		}
+		fmt.Printf("client %v connected\n", conn.RemoteAddr())
+
 		// Handle client session
 		session := newSession(conn)
 		c := session.run()
@@ -58,19 +60,16 @@ func (server *Server) handleRequests(c chan string) {
 		if !ok {
 			return
 		}
-		val, err := server.store.Execute(request)
-		if err != nil {
-			val = err.Error()
-		}
+		request = request[:len(request)-1]
+		val := server.store.Execute(request)
 		c <- val
 	}
 }
 
 func (session *Session) run() chan string {
-	go session.getInput()
-
 	c := make(chan string)
 	go func() {
+		go session.getInput()
 		defer session.conn.Close()
 		defer close(c)
 		for {
@@ -79,14 +78,9 @@ func (session *Session) run() chan string {
 				if !ok {
 					return
 				}
-				fmt.Print("command: " + command)
-				fmt.Println("sendRequest(command)")
 				c <- command
-			case reply, ok := <-session.output:
-				if !ok {
-					return
-				}
-				fmt.Println("sendReply(reply)")
+			case reply := <-c:
+				reply += "\n"
 				go session.sendReply(reply)
 			}
 		}
@@ -95,16 +89,15 @@ func (session *Session) run() chan string {
 }
 
 func (session *Session) getInput() {
-	// Make sure connection socket gets cleaned up.
 	reader := bufio.NewReader(session.conn)
 	for {
 		command, err := reader.ReadString('\n')
 		if err != nil {
 			if err == io.EOF {
 				fmt.Printf("client at %v disconnected: ", session.conn.RemoteAddr())
+			} else {
+				fmt.Println(err)
 			}
-			fmt.Println("is going on")
-			fmt.Println(err)
 			return
 		}
 		session.input <- command
@@ -117,12 +110,12 @@ func (session *Session) sendReply(reply string) {
 		fmt.Println("client disconnected")
 	}
 	if err != nil {
-		fmt.Println("wat")
 		fmt.Println(err)
 	}
 }
 
 func main() {
 	server := newServer()
+	fmt.Println("Welcome to Lettuce! You can connect through another window by running lettuce-cli.")
 	server.serve()
 }
