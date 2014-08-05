@@ -9,10 +9,7 @@ import (
 )
 
 type Cli struct {
-	outbound chan string
-	inbound  chan string
-	conn     net.Conn
-	running  bool
+	conn net.Conn
 }
 
 func newCli() *Cli {
@@ -20,7 +17,7 @@ func newCli() *Cli {
 	if err != nil {
 		log.Fatal(err)
 	}
-	cli := &Cli{outbound: make(chan string), inbound: make(chan string), conn: c, running: true}
+	cli := &Cli{conn: c}
 	return cli
 }
 
@@ -29,23 +26,21 @@ func (cli *Cli) run() {
 	defer cli.conn.Close()
 
 	// Set up goroutines for reading user input and sending over the wire.
-	go cli.getMessage()
-	go cli.getInput()
+	inbound := cli.getMessage()
+	outbound := cli.getInput()
 
 	// Prompt user.
 	fmt.Print("> ")
-	for cli.running {
+	for {
 		select {
-		case message, ok := <-cli.inbound:
+		case message, ok := <-inbound:
 			if !ok {
-				cli.running = false
 				return
 			}
 			fmt.Print(message)
 			fmt.Print("> ")
-		case input, ok := <-cli.outbound:
+		case input, ok := <-outbound:
 			if !ok {
-				cli.running = false
 				return
 			}
 			go cli.sendMessage(input)
@@ -53,18 +48,23 @@ func (cli *Cli) run() {
 	}
 }
 
-func (cli *Cli) getInput() {
-	// Send a message from Stdin through a gochannel.
-	defer close(cli.outbound)
-	reader := bufio.NewReader(os.Stdin)
-	for cli.running {
-		input, err := reader.ReadString('\n')
-		if err != nil {
-			fmt.Println(err)
-			break
+func (cli *Cli) getInput() chan string {
+	c := make(chan string)
+	go func() {
+		// Use buffered io for easier reading.
+		defer close(c)
+		reader := bufio.NewReader(os.Stdin)
+		for {
+			input, err := reader.ReadString('\n')
+			if err != nil {
+				fmt.Println(err)
+				break
+			}
+			// Send cli input over the channel.
+			c <- input
 		}
-		cli.outbound <- input
-	}
+	}()
+	return c
 }
 
 func (cli *Cli) sendMessage(message string) {
@@ -78,19 +78,23 @@ func (cli *Cli) sendMessage(message string) {
 	}
 }
 
-func (cli *Cli) getMessage() {
-	// Receive messages from the server.
-	defer close(cli.inbound)
-	reader := bufio.NewReader(cli.conn)
-	for {
-		message, err := reader.ReadString('\n')
-		if err != nil {
-			fmt.Println("server disconnected")
-			break
+func (cli *Cli) getMessage() chan string {
+	c := make(chan string)
+	go func() {
+		// Use buffered io for easier reading.
+		defer close(c)
+		reader := bufio.NewReader(cli.conn)
+		for {
+			message, err := reader.ReadString('\n')
+			if err != nil {
+				fmt.Println("server disconnected")
+				break
+			}
+			// Send server messagesover the channel.
+			c <- message
 		}
-		// Send server messages over gochannel.
-		cli.inbound <- message
-	}
+	}()
+	return c
 }
 
 func main() {

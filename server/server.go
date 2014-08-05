@@ -16,9 +16,7 @@ type Server struct {
 }
 
 type Session struct {
-	input  chan string
-	output chan string
-	conn   net.Conn
+	conn net.Conn
 }
 
 func newServer() *Server {
@@ -31,23 +29,20 @@ func newServer() *Server {
 }
 
 func newSession(c net.Conn) *Session {
-	return &Session{input: make(chan string, 1024),
-		output: make(chan string, 1024),
-		conn:   c}
+	return &Session{conn: c}
 }
 
 func (server *Server) serve() {
-	// Make sure listener gets cleaned up
 	defer server.listener.Close()
 	for {
-		// Get a connection
+		// Grab a connection.
 		conn, err := server.listener.Accept()
 		if err != nil {
 			fmt.Println(err)
 		}
 		fmt.Printf("client %v connected\n", conn.RemoteAddr())
 
-		// Handle client session
+		// Handle client session.
 		session := newSession(conn)
 		c := session.run()
 		go server.handleRequests(c)
@@ -56,10 +51,12 @@ func (server *Server) serve() {
 
 func (server *Server) handleRequests(c chan string) {
 	for {
+		// Send user requests for the db to execute.
 		request, ok := <-c
 		if !ok {
 			return
 		}
+		// Shave off a newline.
 		request = request[:len(request)-1]
 		val := server.store.Execute(request)
 		c <- val
@@ -69,17 +66,20 @@ func (server *Server) handleRequests(c chan string) {
 func (session *Session) run() chan string {
 	c := make(chan string)
 	go func() {
-		go session.getInput()
+		// Get input from client user.
+		input := session.getInput()
 		defer session.conn.Close()
 		defer close(c)
 		for {
 			select {
-			case command, ok := <-session.input:
+			case command, ok := <-input:
+				// Send to db server.
 				if !ok {
 					return
 				}
 				c <- command
 			case reply := <-c:
+				// Send db server's reply to the user.
 				reply += "\n"
 				go session.sendReply(reply)
 			}
@@ -88,20 +88,26 @@ func (session *Session) run() chan string {
 	return c
 }
 
-func (session *Session) getInput() {
-	reader := bufio.NewReader(session.conn)
-	for {
-		command, err := reader.ReadString('\n')
-		if err != nil {
-			if err == io.EOF {
-				fmt.Printf("client at %v disconnected: ", session.conn.RemoteAddr())
-			} else {
-				fmt.Println(err)
+func (session *Session) getInput() chan string {
+	c := make(chan string)
+	go func() {
+		reader := bufio.NewReader(session.conn)
+		for {
+			// Read from connected client.
+			command, err := reader.ReadString('\n')
+			if err != nil {
+				if err == io.EOF {
+					fmt.Printf("client at %v disconnected\n", session.conn.RemoteAddr())
+				} else {
+					fmt.Println(err)
+				}
+				return
 			}
-			return
+			// Send over the channel
+			c <- command
 		}
-		session.input <- command
-	}
+	}()
+	return c
 }
 
 func (session *Session) sendReply(reply string) {
