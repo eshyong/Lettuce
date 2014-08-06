@@ -6,6 +6,8 @@ import (
 	"io"
 	"log"
 	"net"
+	"os"
+	"os/signal"
 
 	"github.com/eshyong/lettuce/db"
 )
@@ -24,8 +26,7 @@ func newServer() *Server {
 	if err != nil {
 		log.Fatal(err)
 	}
-	return &Server{listener: l,
-		store: db.NewStore()}
+	return &Server{listener: l, store: db.NewStore()}
 }
 
 func newSession(c net.Conn) *Session {
@@ -34,6 +35,8 @@ func newSession(c net.Conn) *Session {
 
 func (server *Server) serve() {
 	defer server.listener.Close()
+	defer server.store.Flush()
+	go server.handleSignals()
 	for {
 		// Grab a connection.
 		conn, err := server.listener.Accept()
@@ -61,6 +64,19 @@ func (server *Server) handleRequests(c chan string) {
 		val := server.store.Execute(request)
 		c <- val
 	}
+}
+
+func (server *Server) handleSignals() {
+	// Create a channel to catch os signals.
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, os.Kill)
+
+	// Block on this channel until signal is received, then flush db.
+	s := <-c
+	fmt.Println(s, "signal received, flushing buffers to disk...")
+	server.store.Flush()
+	fmt.Println("Goodbye!")
+	os.Exit(0)
 }
 
 func (session *Session) run() chan string {
