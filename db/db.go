@@ -1,6 +1,8 @@
 package db
 
 import (
+	"bufio"
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -37,9 +39,33 @@ type Record struct {
 }
 
 func NewStore() *Store {
-	return &Store{stringStore: make(map[string]string),
+	store := &Store{stringStore: make(map[string]string),
 		logs: make([]Record, 0, INITIAL_LOG_CAPACITY),
 		lock: sync.Mutex{}}
+	// Try to read a database dump if one exists.
+	file, err := os.Open("dump")
+	if err != nil {
+		fmt.Println("No existing database found.")
+	} else {
+		// Use a Scanner to get each line of the dump.
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			line := scanner.Text()
+
+			// The log follows the format: "key:val"
+			index := strings.IndexByte(line, ':')
+			if index == -1 {
+				fmt.Println("Invalid database record")
+				continue
+			}
+
+			// Parse and store the key-value pair.
+			key := line[:index]
+			val := line[index+1:]
+			store.stringStore[key] = val
+		}
+	}
+	return store
 }
 
 func NewRecord(r string) *Record {
@@ -64,7 +90,7 @@ func (store *Store) dispatch(request string) string {
 	if !ok {
 		return "no such function"
 	}
-	// Keep a log of every passed transaction.
+	// Keep a log of every passed transaction, and call the function.
 	store.logRecord(request)
 	return exec(args[1:], store)
 }
@@ -75,9 +101,7 @@ func (store *Store) logRecord(r string) {
 }
 
 func (store *Store) writeLogs() {
-	// Open with permissions append, create, write-only, and sync. This
-	// ensures that only one file is created, writes are appended, and
-	// that all changes will be written to disk upon return.
+	// Logs are append-only, and keep a complete record of all transactions in history.
 	file, err := os.OpenFile("log", os.O_WRONLY|os.O_CREATE|os.O_APPEND|os.O_SYNC, 0660)
 	if err != nil {
 		log.Fatal(err)
@@ -92,10 +116,8 @@ func (store *Store) writeLogs() {
 }
 
 func (store *Store) writeDump() {
-	// Open with permissions append, create, write-only, and sync. This
-	// ensures that only one file is created, the old file is overwritten,
-	// and that all changes will be written to disk upon return.
-	file, err := os.OpenFile("dump", os.O_WRONLY|os.O_CREATE|os.O_APPEND|os.O_SYNC, 0660)
+	// Dumps are overwritten each time the server is closed.
+	file, err := os.Create("dump")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -104,6 +126,10 @@ func (store *Store) writeDump() {
 		// Write each key-value pair, separated by colons, to the file.
 		entry := key + ":" + val + "\n"
 		file.WriteString(entry)
+	}
+	err = file.Sync()
+	if err != nil {
+		log.Fatal(err)
 	}
 }
 
