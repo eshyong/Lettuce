@@ -35,7 +35,6 @@ func newSession(c net.Conn) *Session {
 
 func (server *Server) serve() {
 	defer server.listener.Close()
-	defer server.store.Flush()
 	go server.handleSignals()
 	for {
 		// Grab a connection.
