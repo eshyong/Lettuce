@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"os"
@@ -58,8 +57,6 @@ func (server *Server) handleRequests(c chan string) {
 		if !ok {
 			return
 		}
-		// Shave off a newline.
-		request = request[:len(request)-1]
 		val := server.store.Execute(request)
 		c <- val
 	}
@@ -106,20 +103,14 @@ func (session *Session) run() chan string {
 func (session *Session) getInput() chan string {
 	c := make(chan string)
 	go func() {
-		reader := bufio.NewReader(session.conn)
-		for {
+		scanner := bufio.NewScanner(session.conn)
+		for scanner.Scan() {
 			// Read from connected client.
-			command, err := reader.ReadString('\n')
-			if err != nil {
-				if err == io.EOF {
-					fmt.Printf("client at %v disconnected\n", session.conn.RemoteAddr())
-				} else {
-					fmt.Println(err)
-				}
-				return
-			}
-			// Send over the channel
-			c <- command
+			c <- scanner.Text()
+		}
+		fmt.Printf("client at %v disconnected\n", session.conn.RemoteAddr())
+		if err := scanner.Err(); err != nil {
+			fmt.Println(err)
 		}
 	}()
 	return c

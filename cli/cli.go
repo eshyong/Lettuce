@@ -37,7 +37,7 @@ func (cli *Cli) run() {
 			if !ok {
 				return
 			}
-			fmt.Print(message)
+			fmt.Println(message)
 			fmt.Print("> ")
 		case input, ok := <-outbound:
 			if !ok {
@@ -53,15 +53,14 @@ func (cli *Cli) getInput() chan string {
 	go func() {
 		// Use buffered io for easier reading.
 		defer close(c)
-		reader := bufio.NewReader(os.Stdin)
-		for {
-			input, err := reader.ReadString('\n')
-			if err != nil {
-				fmt.Println(err)
-				break
-			}
+		scanner := bufio.NewScanner(os.Stdin)
+		for scanner.Scan() {
 			// Send cli input over the channel.
-			c <- input
+			c <- scanner.Text()
+		}
+		// Non-EOF error.
+		if err := scanner.Err(); err != nil {
+			fmt.Println(err)
 		}
 	}()
 	return c
@@ -69,7 +68,7 @@ func (cli *Cli) getInput() chan string {
 
 func (cli *Cli) sendMessage(message string) {
 	// Send commands to the server through a TCPConn.
-	n, err := cli.conn.Write([]byte(message))
+	n, err := fmt.Fprintln(cli.conn, message)
 	if n == 0 {
 		fmt.Println("server disconnected")
 	}
@@ -83,15 +82,15 @@ func (cli *Cli) getMessage() chan string {
 	go func() {
 		// Use buffered io for easier reading.
 		defer close(c)
-		reader := bufio.NewReader(cli.conn)
-		for {
-			message, err := reader.ReadString('\n')
-			if err != nil {
-				fmt.Println("server disconnected")
-				break
-			}
-			// Send server messagesover the channel.
-			c <- message
+		scanner := bufio.NewScanner(cli.conn)
+		for scanner.Scan() {
+			// Send server messages over the channel.
+			c <- scanner.Text()
+		}
+		fmt.Println("server disconnected")
+		if err := scanner.Err(); err != nil {
+			// Some error other than EOF.
+			fmt.Println(err)
 		}
 	}()
 	return c
