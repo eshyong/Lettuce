@@ -13,22 +13,33 @@ import (
 
 // Integer constants.
 const (
-	MAXINT               = 9223372036854775807
-	MININT               = -9223372036854775808
-	INITIAL_LOG_CAPACITY = 4096
+	MAXINT                = 9223372036854775807
+	MININT                = -9223372036854775808
+	INITIAL_LOG_CAPACITY  = 8192
+	INITIAL_LIST_CAPACITY = 1024
 )
 
 // Lookup table for function requests.
 var funcmap = map[string]func(args []string, store *Store) string{
-	"get":  getValue,
-	"set":  setValue,
-	"incr": incr,
-	"decr": decr,
-	"del":  del,
+	// Atomic string operations.
+	"get":    getValue,
+	"set":    setValue,
+	"incr":   incr,
+	"incrby": incrby,
+	"decr":   decr,
+	"del":    del,
+
+	// Atomic list operations.
+	"rpush":  rpush,
+	"rpop":   rpop,
+	"llen":   llen,
+	"lrange": lrange,
 }
 
 type Store struct {
 	stringStore map[string]string
+	hashStore   map[string]map[string]string
+	listStore   map[string][]string
 	logs        []Record
 	lock        sync.Mutex
 }
@@ -39,9 +50,11 @@ type Record struct {
 }
 
 func NewStore() *Store {
-	store := &Store{stringStore: make(map[string]string),
-		logs: make([]Record, 0, INITIAL_LOG_CAPACITY),
-		lock: sync.Mutex{}}
+	store := &Store{listStore: make(map[string][]string),
+		hashStore:   make(map[string]map[string]string),
+		stringStore: make(map[string]string),
+		logs:        make([]Record, 0, INITIAL_LOG_CAPACITY),
+		lock:        sync.Mutex{}}
 	// Try to read a database dump if one exists.
 	file, err := os.Open("dump")
 	if err != nil {
@@ -83,12 +96,16 @@ func (store *Store) Execute(request string) string {
 }
 
 func (store *Store) dispatch(request string) string {
+	if request == "" {
+		return request
+	}
+
 	// Commands are case insensitive, but arguments are not.
 	args := strings.Split(request, " ")
 	function := strings.ToLower(args[0])
 	exec, ok := funcmap[function]
 	if !ok {
-		return "no such function"
+		return "nop: no such function"
 	}
 	// Keep a log of every passed transaction, and call the function.
 	store.logRecord(request)
@@ -138,7 +155,7 @@ func getValue(args []string, store *Store) string {
 	store.lock.Lock()
 	defer store.lock.Unlock()
 	if len(args) != 1 {
-		return "wrong number of arguments for \"GET\""
+		return "wrong number of arguments for \"GET\", expected 1"
 	}
 	// Trim surrounding quotes.
 	key := strings.Trim(args[0], "\"")
@@ -146,7 +163,7 @@ func getValue(args []string, store *Store) string {
 	if !present {
 		return "<nil>"
 	}
-	return val
+	return "\"" + val + "\""
 }
 
 func setValue(args []string, store *Store) string {
@@ -154,7 +171,7 @@ func setValue(args []string, store *Store) string {
 	store.lock.Lock()
 	defer store.lock.Unlock()
 	if len(args) != 2 {
-		return "wrong number of arguments for \"SET\""
+		return "wrong number of arguments for \"SET\", expected 2"
 	}
 
 	// Trim surrounding quotes.
@@ -169,7 +186,7 @@ func incr(args []string, store *Store) string {
 	store.lock.Lock()
 	defer store.lock.Unlock()
 	if len(args) != 1 {
-		return "wrong number of arguments for \"INCR\""
+		return "wrong number of arguments for \"INCR\", expected 1"
 	}
 	// Trim surrounding quotes.
 	key := strings.Trim(args[0], "\"")
@@ -181,7 +198,7 @@ func incr(args []string, store *Store) string {
 	}
 	intVal, err := strconv.ParseInt(val, 10, 64)
 	if err != nil {
-		return err.Error()
+		return "cannot increment non-integer string"
 	}
 
 	// Check for integer overflow, increment, and convert back into a string.
@@ -190,7 +207,42 @@ func incr(args []string, store *Store) string {
 	}
 	result := strconv.FormatInt(intVal+1, 10)
 	store.stringStore[key] = result
-	return result
+	return "(int) " + result
+}
+
+func incrby(args []string, store *Store) string {
+	// Get mutex lock and ensure release.
+	store.lock.Lock()
+	defer store.lock.Unlock()
+	if len(args) != 2 {
+		return "wrong number of arguments for \"INCRBY\", expected 2"
+	}
+	// Trim surrounding quotes.
+	key := strings.Trim(args[0], "\"")
+
+	// Try to parse incrby argument as an integer.
+	plus, err := strconv.ParseInt(args[1], 10, 64)
+	if err != nil {
+		return "invalid integer argument"
+	}
+
+	// Get string and try to parse it as an integer.
+	val, present := store.stringStore[key]
+	if !present {
+		return "no such value in store"
+	}
+	intVal, err := strconv.ParseInt(val, 10, 64)
+	if err != nil {
+		return "cannot increment non-integer value"
+	}
+
+	// Check for integer underflow, decrement, and convert back into a string.
+	if intVal > MAXINT-plus {
+		return "unable to \"INCRBY\", integer overflow"
+	}
+	result := strconv.FormatInt(intVal+plus, 10)
+	store.stringStore[key] = result
+	return "(int) " + result
 }
 
 func decr(args []string, store *Store) string {
@@ -198,7 +250,7 @@ func decr(args []string, store *Store) string {
 	store.lock.Lock()
 	defer store.lock.Unlock()
 	if len(args) != 1 {
-		return "wrong number of arguments for \"DECR\""
+		return "wrong number of arguments for \"DECR\", expected 1"
 	}
 	// Trim surrounding quotes.
 	key := strings.Trim(args[0], "\"")
@@ -210,7 +262,7 @@ func decr(args []string, store *Store) string {
 	}
 	intVal, err := strconv.ParseInt(val, 10, 64)
 	if err != nil {
-		return err.Error()
+		return "cannot decrement non-integer value"
 	}
 
 	// Check for integer underflow, decrement, and convert back into a string.
@@ -219,7 +271,7 @@ func decr(args []string, store *Store) string {
 	}
 	result := strconv.FormatInt(intVal-1, 10)
 	store.stringStore[key] = result
-	return result
+	return "(int) " + result
 }
 
 func del(args []string, store *Store) string {
@@ -227,10 +279,125 @@ func del(args []string, store *Store) string {
 	store.lock.Lock()
 	defer store.lock.Unlock()
 	if len(args) != 1 {
-		return "wrong number of arguments for \"DEL\""
+		return "wrong number of arguments for \"DEL\", expected 1"
 	}
 	// Trim surrounding quotes.
 	key := strings.Trim(args[0], "\"")
 	delete(store.stringStore, key)
 	return "OK"
+}
+
+func rpush(args []string, store *Store) string {
+	// Get mutex lock and ensure release.
+	store.lock.Lock()
+	defer store.lock.Unlock()
+	if len(args) != 2 {
+		return "wrong number of arguments for \"RPUSH\", expected 2"
+	}
+	// Trim surrounding quotes.
+	name := strings.Trim(args[0], "\"")
+	item := strings.Trim(args[1], "\"")
+
+	// Check if list is present, and create a new one if not.
+	list, present := store.listStore[name]
+	if !present {
+		list = make([]string, 0, INITIAL_LIST_CAPACITY)
+	}
+	// Append to list and return length of list.
+	list = append(list, item)
+	store.listStore[name] = list
+	return "(int) " + strconv.FormatInt(int64(len(list)), 10)
+}
+
+func rpop(args []string, store *Store) string {
+	// Get mutex lock and ensure release.
+	store.lock.Lock()
+	defer store.lock.Unlock()
+	if len(args) != 1 {
+		return "wrong number of arguments for \"RPOP\", expected 1"
+	}
+
+	// Trim surrounding quotes.
+	name := strings.Trim(args[0], "\"")
+
+	// Check if list is present in store.
+	list, present := store.listStore[name]
+	if !present {
+		return "<nil>"
+	}
+	// Pop from list and return length of list.
+	item, list := list[len(list)-1], list[:len(list)-1]
+	if len(list) == 0 {
+		delete(store.listStore, name)
+	} else {
+		store.listStore[name] = list
+	}
+	return "\"" + item + "\""
+}
+
+func llen(args []string, store *Store) string {
+	// Get mutex lock and ensure release.
+	store.lock.Lock()
+	defer store.lock.Unlock()
+	if len(args) != 1 {
+		return "wrong number of arguments for \"RPOP\", expected 1"
+	}
+
+	// Trim surrounding quotes.
+	name := strings.Trim(args[0], "\"")
+
+	// Check if list is present in store.
+	list, present := store.listStore[name]
+	if !present {
+		return "(int) 0"
+	}
+	return "(int) " + strconv.FormatInt(int64(len(list)), 10)
+}
+
+func lrange(args []string, store *Store) string {
+	// Get mutex lock and ensure release.
+	store.lock.Lock()
+	defer store.lock.Unlock()
+	if len(args) != 3 {
+		return "wrong number of arguments for \"LRANGE\", expected 3"
+	}
+
+	// Trim surrounding quotes
+	name := strings.Trim(args[0], "\"")
+
+	// Check if list is present in store
+	list, present := store.listStore[name]
+	if !present {
+		return "empty list"
+	}
+
+	// Try to parse start and stop as integers.
+	start, err := strconv.ParseInt(args[1], 10, 64)
+	if err != nil {
+		return "invalid integer given as start index"
+	}
+	stop, err := strconv.ParseInt(args[2], 10, 64)
+	if err != nil {
+		return "invalid integer given as stop index"
+	}
+
+	// Read until end of the list if stop is negative.
+	if stop < 0 {
+		stop = int64(len(list))
+	}
+
+	// Start should be a positive integer.
+	if start < 0 {
+		return "start index must be positive"
+	}
+	if int(start) > len(list) {
+		return "empty list"
+	}
+
+	// Print out each item of the list until stop, or the end of the list.
+	ret := ""
+	for i := start; i < stop; i++ {
+		ret = ret + strconv.FormatInt(i, 10) + ") " + list[i] + "\n"
+	}
+	return ret
 }
