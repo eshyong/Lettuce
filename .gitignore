@@ -2,4 +2,4 @@
 server/dump
 server/log
 server/server
-client/cli
+cli/cli
