@@ -41,7 +41,7 @@ func (server *Server) serve() {
 		if err != nil {
 			fmt.Println(err)
 		}
-		fmt.Printf("client %v connected\n", conn.RemoteAddr())
+		fmt.Println("client connected on address", conn.LocalAddr())
 
 		// Handle client session.
 		session := newSession(conn)
@@ -92,7 +92,6 @@ func (session *Session) run() chan string {
 				c <- command
 			case reply := <-c:
 				// Send db server's reply to the user.
-				reply += "\n"
 				go session.sendReply(reply)
 			}
 		}
@@ -117,7 +116,7 @@ func (session *Session) getInput() chan string {
 }
 
 func (session *Session) sendReply(reply string) {
-	n, err := session.conn.Write([]byte(reply))
+	n, err := fmt.Fprintln(session.conn, reply)
 	if n == 0 {
 		fmt.Println("client disconnected")
 	}

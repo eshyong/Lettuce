@@ -12,16 +12,17 @@ type Cli struct {
 	conn net.Conn
 }
 
-func newCli() *Cli {
+func NewCli() *Cli {
 	c, err := net.Dial("tcp", "localhost:8000")
 	if err != nil {
 		log.Fatal(err)
 	}
+	fmt.Println("Connected to server", c.RemoteAddr())
 	cli := &Cli{conn: c}
 	return cli
 }
 
-func (cli *Cli) run() {
+func (cli *Cli) Run() {
 	// Make sure connection socket gets cleaned up.
 	defer cli.conn.Close()
 
@@ -37,7 +38,9 @@ func (cli *Cli) run() {
 			if !ok {
 				return
 			}
-			fmt.Println(message)
+			if message != "" {
+				fmt.Println(message)
+			}
 			fmt.Print("> ")
 		case input, ok := <-outbound:
 			if !ok {
@@ -97,6 +100,6 @@ func (cli *Cli) getMessage() chan string {
 }
 
 func main() {
-	cli := newCli()
-	cli.run()
+	cli := NewCli()
+	cli.Run()
 }
