@@ -7,6 +7,8 @@ import (
 	"net"
 )
 
+const CLI_CLIENT_PORT = "8000"
+
 type Server struct {
 	listener net.Listener
 }
@@ -16,7 +18,7 @@ type Session struct {
 }
 
 func NewServer() *Server {
-	l, err := net.Listen("tcp", ":8000")
+	l, err := net.Listen("tcp", ":"+CLI_CLIENT_PORT)
 	if err != nil {
 		log.Fatal(err)
 	}
