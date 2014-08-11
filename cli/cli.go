@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bufio"
@@ -97,9 +97,4 @@ func (cli *Cli) getMessage() chan string {
 		}
 	}()
 	return c
-}
-
-func main() {
-	cli := NewCli()
-	cli.Run()
 }

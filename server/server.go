@@ -1,78 +1,68 @@
-package main
+package server
 
 import (
 	"bufio"
 	"fmt"
 	"log"
 	"net"
-	"os"
-	"os/signal"
-
-	"github.com/eshyong/lettuce/db"
 )
 
 type Server struct {
 	listener net.Listener
-	store    *db.Store
 }
 
 type Session struct {
 	conn net.Conn
 }
 
-func newServer() *Server {
+func NewServer() *Server {
 	l, err := net.Listen("tcp", ":8000")
 	if err != nil {
 		log.Fatal(err)
 	}
-	return &Server{listener: l, store: db.NewStore()}
+	return &Server{listener: l}
 }
 
 func newSession(c net.Conn) *Session {
 	return &Session{conn: c}
 }
 
-func (server *Server) serve() {
-	defer server.listener.Close()
-	go server.handleSignals()
-	for {
-		// Grab a connection.
-		conn, err := server.listener.Accept()
-		if err != nil {
-			fmt.Println(err)
-		}
-		fmt.Println("client connected on address", conn.LocalAddr())
+func (server *Server) Serve() chan string {
+	node := make(chan string)
+	go func() {
+		defer server.listener.Close()
 
-		// Handle client session.
-		session := newSession(conn)
-		c := session.run()
-		go server.handleRequests(c)
-	}
+		for {
+			// Grab a connection.
+			conn, err := server.listener.Accept()
+			if err != nil {
+				fmt.Println(err)
+			}
+			fmt.Println("client connected on address", conn.LocalAddr())
+
+			// Handle client session.
+			session := newSession(conn)
+			c := session.run()
+			server.handleRequests(c, node)
+		}
+	}()
+	return node
 }
 
-func (server *Server) handleRequests(c chan string) {
+func (server *Server) handleRequests(sesh chan string, node chan string) {
 	for {
 		// Send user requests for the db to execute.
-		request, ok := <-c
+		request, ok := <-sesh
 		if !ok {
 			return
 		}
-		val := server.store.Execute(request)
-		c <- val
+		// Send request to the node, which will execute the command.
+		sesh <- request
+
+		// Get a response back from the node, which we send back to the session.
+		response := <-sesh
+		node <- response
 	}
-}
-
-func (server *Server) handleSignals() {
-	// Create a channel to catch os signals.
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, os.Kill)
-
-	// Block on this channel until signal is received, then flush db.
-	s := <-c
-	fmt.Println(s, "signal received, flushing buffers to disk...")
-	server.store.Flush()
-	fmt.Println("Goodbye!")
-	os.Exit(0)
 }
 
 func (session *Session) run() chan string {
@@ -123,10 +113,4 @@ func (session *Session) sendReply(reply string) {
 	if err != nil {
 		fmt.Println(err)
 	}
-}
-
-func main() {
-	server := newServer()
-	fmt.Println("Welcome to Lettuce! You can connect through another window by running lettuce-cli.")
-	server.serve()
 }
