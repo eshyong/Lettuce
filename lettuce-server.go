@@ -1,13 +1,8 @@
 package main
 
-import (
-	"fmt"
-
-	"github.com/eshyong/lettuce/server"
-)
+import "github.com/eshyong/lettuce/node"
 
 func main() {
-	s := server.NewServer()
-	fmt.Println("Welcome to Lettuce! You can connect through another window by running lettuce-cli.")
-	s.Serve()
+	n := node.NewNode()
+	n.Run()
 }
