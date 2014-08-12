@@ -5,114 +5,88 @@ import (
 	"fmt"
 	"log"
 	"net"
+
+	"github.com/eshyong/lettuce/db"
 )
 
-const CLI_CLIENT_PORT = "8000"
-
 type Server struct {
-	listener net.Listener
-}
-
-type Session struct {
-	conn net.Conn
+	master  net.Conn
+	store   *db.Store
+	primary bool
 }
 
 func NewServer() *Server {
-	l, err := net.Listen("tcp", ":"+CLI_CLIENT_PORT)
+	s := db.NewStore()
+	listener, err := net.Listen("tcp", ":"+SERVER_PORT)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("Unable to start server.", err)
 	}
-	return &Server{listener: l}
-}
+	defer listener.Close()
 
-func newSession(c net.Conn) *Session {
-	return &Session{conn: c}
-}
-
-func (server *Server) Serve() chan string {
-	node := make(chan string)
-	go func() {
-		defer server.listener.Close()
-
-		for {
-			// Grab a connection.
-			conn, err := server.listener.Accept()
-			if err != nil {
-				fmt.Println(err)
-			}
-			fmt.Println("client connected on address", conn.LocalAddr())
-
-			// Handle client session.
-			session := newSession(conn)
-			c := session.run()
-			server.handleRequests(c, node)
-		}
-	}()
-	return node
-}
-
-func (server *Server) handleRequests(sesh chan string, node chan string) {
-	for {
-		// Send user requests for the db to execute.
-		request, ok := <-sesh
-		if !ok {
-			return
-		}
-		// Send request to the node, which will execute the command.
-		sesh <- request
-
-		// Get a response back from the node, which we send back to the session.
-		response := <-sesh
-		node <- response
+	fmt.Println("Waiting for master to connect...")
+	conn, err := listener.Accept()
+	if err != nil {
+		log.Fatal("Unable to connect to master.", err)
 	}
+
+	dbServer := &Server{master: conn, store: s, primary: false}
+	scanner := bufio.NewScanner(conn)
+	scanner.Scan()
+	if err := scanner.Err(); err != nil {
+		fmt.Println("Could not receive message from master")
+	} else {
+		if scanner.Text() == "true" {
+			dbServer.primary = true
+		}
+	}
+	return dbServer
 }
 
-func (session *Session) run() chan string {
+func (server *Server) getInput() chan string {
 	c := make(chan string)
 	go func() {
-		// Get input from client user.
-		input := session.getInput()
-		defer session.conn.Close()
 		defer close(c)
-		for {
-			select {
-			case command, ok := <-input:
-				// Send to db server.
-				if !ok {
-					return
-				}
-				c <- command
-			case reply := <-c:
-				// Send db server's reply to the user.
-				go session.sendReply(reply)
-			}
-		}
-	}()
-	return c
-}
-
-func (session *Session) getInput() chan string {
-	c := make(chan string)
-	go func() {
-		scanner := bufio.NewScanner(session.conn)
+		scanner := bufio.NewScanner(server.master)
 		for scanner.Scan() {
-			// Read from connected client.
 			c <- scanner.Text()
 		}
-		fmt.Printf("client at %v disconnected\n", session.conn.RemoteAddr())
 		if err := scanner.Err(); err != nil {
-			fmt.Println(err)
+			fmt.Println("Error", err)
 		}
 	}()
 	return c
 }
 
-func (session *Session) sendReply(reply string) {
-	n, err := fmt.Fprintln(session.conn, reply)
-	if n == 0 {
-		fmt.Println("client disconnected")
-	}
-	if err != nil {
-		fmt.Println(err)
+func (server *Server) sendReply() chan string {
+	c := make(chan string)
+	go func() {
+		for {
+			defer close(c)
+			reply := <-c
+			n, err := fmt.Fprintln(server.master, reply)
+			if n == 0 {
+				fmt.Println("Master disconnected")
+				break
+			}
+			if err != nil {
+				fmt.Println(err)
+				break
+			}
+		}
+	}()
+	return c
+}
+
+func (server *Server) Serve() {
+	fmt.Println("DB server running!")
+	in := server.getInput()
+	out := server.sendReply()
+	for {
+		request, ok := <-in
+		if !ok {
+			break
+		}
+		reply := server.store.Execute(request)
+		out <- reply
 	}
 }
