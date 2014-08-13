@@ -16,9 +16,10 @@ const (
 )
 
 type Master struct {
-	listener net.Listener
-	primary  net.Conn
-	backup   net.Conn
+	clientListener net.Listener
+	primary        net.Conn
+	backup         net.Conn
+	addresses      map[string]string
 }
 
 type Session struct {
@@ -34,18 +35,118 @@ func NewMaster() *Master {
 	if err != nil {
 		log.Fatal("Listen: unable to get a port", err)
 	}
-	master := &Master{listener: l}
+	master := &Master{clientListener: l, addresses: make(map[string]string)}
 	master.connectToServers()
 	return master
 }
 
+// Connects to the primary and backup servers. If none are found, will wait
+// for servers to come online.
+func (master *Master) connectToServers() {
+	file, err := os.Open("config/servers")
+	if err != nil {
+		log.Fatal("No server configuration file found, quitting", err)
+	}
+	scanner := bufio.NewScanner(file)
+	wait := make(chan bool)
+
+	// Connect to addresses listed in config file.
+	for scanner.Scan() {
+		entry := scanner.Text()
+		// Ignore comments.
+		if entry[0] != '#' {
+			go master.parseLineAndConnect(entry, wait)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		// Wait for goroutines to finish.
+		<-wait
+	}
+	if master.primary == nil {
+		if master.backup == nil {
+			// No servers were found, alternate between polling servers and sleeping.
+			fmt.Println("No servers are up yet, waiting for connections")
+			master.waitForConnections()
+		} else {
+			// Promote the backup to primary.
+			fmt.Println("Promoting backup to primary...")
+			master.primary = master.backup
+			master.backup = nil
+		}
+	}
+}
+
+// Parses a config file, and attempts to connect to
+func (master *Master) parseLineAndConnect(entry string, w chan bool) {
+	// Split each entry by server name and address.
+	arr := strings.Split(entry, " ")
+	server := arr[0]
+	address := arr[1]
+	master.addresses[server] = address
+
+	if server == "primary" {
+		if master.primary != nil {
+			fmt.Println("config/servers: two primaries specified, default to last connection")
+			// TODO: add to backups
+		}
+		// Connect to primary and notify the server that it is indeed a primary.
+		primary, err := net.DialTimeout("tcp", address+":"+SERVER_PORT, time.Second*10)
+		if err != nil {
+			fmt.Println("Couldn't connect to primary:", err)
+		} else {
+			fmt.Println("Connected to primary at address", primary.RemoteAddr())
+			master.primary = primary
+			fmt.Fprintln(master.primary, "true")
+		}
+	} else {
+		// Connect to backup and notify the server that it is not a primary.
+		backup, err := net.DialTimeout("tcp", address+":"+SERVER_PORT, time.Second*10)
+		if err != nil {
+			fmt.Println("Couldn't connect to backup:", err)
+		} else {
+			fmt.Println("Connected to backup at address", backup.RemoteAddr())
+			master.backup = backup
+			fmt.Fprintln(master.backup, "false")
+		}
+	}
+	w <- true
+}
+
+// This is run if no servers are discovered on startup. Alternates between polling and sleeping.
+func (master *Master) waitForConnections() {
+	go master.connectToPrimary()
+	go master.connectToBackup()
+	for master.primary == nil || master.backup == nil {
+		time.Sleep(time.Second * 5)
+	}
+}
+
+// Connects to a primary server, timing out after 10 seconds.
+func (master *Master) connectToPrimary() {
+	primary, err := net.DialTimeout("tcp", master.addresses["primary"]+":"+SERVER_PORT, time.Second*10)
+	if err == nil {
+		fmt.Println("Primary is up!")
+		master.primary = primary
+	}
+}
+
+// Connects to a backup server, timing out after 10 seconds.
+func (master *Master) connectToBackup() {
+	backup, err := net.DialTimeout("tcp", master.addresses["backup"]+":"+SERVER_PORT, time.Second*10)
+	if err == nil {
+		fmt.Println("Backup is up!")
+		master.backup = backup
+	}
+}
+
+// Serves any number of clients. TODO: load test.
 func (master *Master) Serve() {
-	defer master.listener.Close()
+	defer master.clientListener.Close()
 	fmt.Println("Welcome to lettuce! You can connect to this database by " +
 		"running `lettuce-cli` in another window.")
 	for {
 		// Grab a connection.
-		conn, err := master.listener.Accept()
+		conn, err := master.clientListener.Accept()
 		if err != nil {
 			fmt.Println(err)
 		}
@@ -58,57 +159,10 @@ func (master *Master) Serve() {
 	}
 }
 
-func (master *Master) connectToServers() {
-	file, err := os.Open("config/servers")
-	if err != nil {
-		log.Fatal("Unable to open configuration file, aborting...", err)
-	}
-	scanner := bufio.NewScanner(file)
-	wait := make(chan bool)
-	n := 0
-	for scanner.Scan() {
-		n++
-		go master.parseLineAndConnect(scanner.Text(), wait)
-	}
-	for i := 0; i < n; i++ {
-		<-wait
-	}
-}
-
-func (master *Master) parseLineAndConnect(line string, w chan bool) {
-	arr := strings.Split(line, " ")
-	server := arr[0]
-	address := arr[1]
-
-	if server == "primary" {
-		if master.primary != nil {
-			fmt.Println("config/servers: two primaries specified, default to last connection")
-			// TODO: add to backups
-		}
-		primary, err := net.DialTimeout("tcp", address+":"+SERVER_PORT, time.Second*10)
-		if err != nil {
-			fmt.Println("Couldn't connect to primary:", err)
-			return
-		}
-		fmt.Println("Connected to primary at address", primary.RemoteAddr())
-		master.primary = primary
-		fmt.Fprintln(master.primary, "true")
-	} else {
-		backup, err := net.DialTimeout("tcp", address+":"+SERVER_PORT, time.Second*10)
-		if err != nil {
-			fmt.Println("Couldn't connect to backup:", err)
-			return
-		}
-		fmt.Println("Connected to backup at address", backup.RemoteAddr())
-		master.backup = backup
-		fmt.Fprintln(master.backup, "false")
-	}
-	w <- true
-}
-
+// Middleman function that shuttles data from client to the server.
 func (master *Master) handleRequests(sesh chan string) {
-	out := master.sendRequests()
-	in := master.getReplies()
+	out := master.sendRequestsToServer()
+	in := master.getRepliesFromServer()
 	for {
 		// Send user requests to a primary to execute.
 		request, ok := <-sesh
@@ -122,7 +176,8 @@ func (master *Master) handleRequests(sesh chan string) {
 	}
 }
 
-func (master *Master) sendRequests() chan string {
+// Asks the server to execute a user command.
+func (master *Master) sendRequestsToServer() chan string {
 	c := make(chan string)
 	go func() {
 		for {
@@ -139,7 +194,8 @@ func (master *Master) sendRequests() chan string {
 	return c
 }
 
-func (master *Master) getReplies() chan string {
+// Gets a response from the server.
+func (master *Master) getRepliesFromServer() chan string {
 	c := make(chan string)
 	go func() {
 		scanner := bufio.NewScanner(master.primary)
@@ -153,11 +209,13 @@ func (master *Master) getReplies() chan string {
 	return c
 }
 
+// Client session: gets input from client and sends it to a channel to the master.
+// Each session has its own socket connection.
 func (session *Session) run() chan string {
 	c := make(chan string)
 	go func() {
 		// Get input from client user.
-		input := session.getInput()
+		input := session.getInputFromClient()
 		defer session.conn.Close()
 		defer close(c)
 		for {
@@ -170,14 +228,15 @@ func (session *Session) run() chan string {
 				c <- command
 			case reply := <-c:
 				// Send db server's reply to the user.
-				go session.sendReply(reply)
+				go session.sendReplyToClient(reply)
 			}
 		}
 	}()
 	return c
 }
 
-func (session *Session) getInput() chan string {
+// Gets a database request from the client.
+func (session *Session) getInputFromClient() chan string {
 	c := make(chan string)
 	go func() {
 		scanner := bufio.NewScanner(session.conn)
@@ -193,7 +252,8 @@ func (session *Session) getInput() chan string {
 	return c
 }
 
-func (session *Session) sendReply(reply string) {
+// Sends a database response to the client.
+func (session *Session) sendReplyToClient(reply string) {
 	n, err := fmt.Fprintln(session.conn, reply)
 	if n == 0 {
 		fmt.Println("client disconnected")

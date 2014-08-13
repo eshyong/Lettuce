@@ -33,9 +33,10 @@ func NewServer() *Server {
 	scanner := bufio.NewScanner(conn)
 	scanner.Scan()
 	if err := scanner.Err(); err != nil {
-		fmt.Println("Could not receive message from master")
+		fmt.Println("Could not receive message from master.")
 	} else {
 		if scanner.Text() == "true" {
+			fmt.Println("Confirmed as primary.")
 			dbServer.primary = true
 		}
 	}
