@@ -221,7 +221,7 @@ func (master *Master) run(session net.Conn) chan string {
 				c <- command
 			case reply := <-c:
 				// Send db server's reply to the user.
-				go sendReplyToClient(session, reply)
+				go master.sendReplyToClient(session, reply)
 			}
 		}
 	}()
@@ -246,7 +246,7 @@ func (master *Master) getInputFromClient(session net.Conn) chan string {
 }
 
 // Sends a database response to the client.
-func sendReplyToClient(session net.Conn, reply string) {
+func (master *Master) sendReplyToClient(session net.Conn, reply string) {
 	n, err := fmt.Fprintln(session, reply)
 	if n == 0 {
 		fmt.Println("client disconnected")
