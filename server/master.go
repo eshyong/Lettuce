@@ -22,14 +22,6 @@ type Master struct {
 	addresses      map[string]string
 }
 
-type Session struct {
-	conn net.Conn
-}
-
-func newSession(c net.Conn) *Session {
-	return &Session{conn: c}
-}
-
 func NewMaster() *Master {
 	l, err := net.Listen("tcp", ":"+CLI_CLIENT_PORT)
 	if err != nil {
@@ -114,9 +106,9 @@ func (master *Master) parseLineAndConnect(entry string, w chan bool) {
 
 // This is run if no servers are discovered on startup. Alternates between polling and sleeping.
 func (master *Master) waitForConnections() {
-	go master.connectToPrimary()
-	go master.connectToBackup()
-	for master.primary == nil || master.backup == nil {
+	for master.primary == nil { // || master.backup == nil {
+		go master.connectToPrimary()
+		//go master.connectToBackup()
 		time.Sleep(time.Second * 5)
 	}
 }
@@ -126,6 +118,7 @@ func (master *Master) connectToPrimary() {
 	primary, err := net.DialTimeout("tcp", master.addresses["primary"]+":"+SERVER_PORT, time.Second*10)
 	if err == nil {
 		fmt.Println("Primary is up!")
+		fmt.Fprintln(primary, "true")
 		master.primary = primary
 	}
 }
@@ -135,6 +128,7 @@ func (master *Master) connectToBackup() {
 	backup, err := net.DialTimeout("tcp", master.addresses["backup"]+":"+SERVER_PORT, time.Second*10)
 	if err == nil {
 		fmt.Println("Backup is up!")
+		fmt.Fprintln(backup, "false")
 		master.backup = backup
 	}
 }
@@ -153,8 +147,7 @@ func (master *Master) Serve() {
 		fmt.Println("client connected on address", conn.LocalAddr())
 
 		// Handle client session.
-		session := newSession(conn)
-		sesh := session.run()
+		sesh := master.run(conn)
 		go master.handleRequests(sesh)
 	}
 }
@@ -211,12 +204,12 @@ func (master *Master) getRepliesFromServer() chan string {
 
 // Client session: gets input from client and sends it to a channel to the master.
 // Each session has its own socket connection.
-func (session *Session) run() chan string {
+func (master *Master) run(session net.Conn) chan string {
 	c := make(chan string)
 	go func() {
 		// Get input from client user.
-		input := session.getInputFromClient()
-		defer session.conn.Close()
+		input := master.getInputFromClient(session)
+		defer session.Close()
 		defer close(c)
 		for {
 			select {
@@ -228,7 +221,7 @@ func (session *Session) run() chan string {
 				c <- command
 			case reply := <-c:
 				// Send db server's reply to the user.
-				go session.sendReplyToClient(reply)
+				go sendReplyToClient(session, reply)
 			}
 		}
 	}()
@@ -236,15 +229,15 @@ func (session *Session) run() chan string {
 }
 
 // Gets a database request from the client.
-func (session *Session) getInputFromClient() chan string {
+func (master *Master) getInputFromClient(session net.Conn) chan string {
 	c := make(chan string)
 	go func() {
-		scanner := bufio.NewScanner(session.conn)
+		scanner := bufio.NewScanner(session)
 		for scanner.Scan() {
 			// Read from connected client.
 			c <- scanner.Text()
 		}
-		fmt.Printf("client at %v disconnected\n", session.conn.RemoteAddr())
+		fmt.Printf("client at %v disconnected\n", session.LocalAddr())
 		if err := scanner.Err(); err != nil {
 			fmt.Println(err)
 		}
@@ -253,8 +246,8 @@ func (session *Session) getInputFromClient() chan string {
 }
 
 // Sends a database response to the client.
-func (session *Session) sendReplyToClient(reply string) {
-	n, err := fmt.Fprintln(session.conn, reply)
+func sendReplyToClient(session net.Conn, reply string) {
+	n, err := fmt.Fprintln(session, reply)
 	if n == 0 {
 		fmt.Println("client disconnected")
 	}
