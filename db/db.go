@@ -92,15 +92,12 @@ func (store *Store) Flush() {
 }
 
 func (store *Store) Execute(request string) string {
-	return store.dispatch(request)
-}
-
-func (store *Store) dispatch(request string) string {
 	if request == "" {
 		return request
 	}
 
 	// Commands are case insensitive, but arguments are not.
+	request = strings.Trim(request, " ")
 	args := strings.Split(request, " ")
 	function := strings.ToLower(args[0])
 	exec, ok := funcmap[function]
