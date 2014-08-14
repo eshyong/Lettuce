@@ -39,85 +39,61 @@ func (master *Master) connectToServers() {
 	if err != nil {
 		log.Fatal("No server configuration file found, quitting", err)
 	}
+
+	// Read config file and connect to each address.
+	master.parseAddresses(file)
+	for server, _ := range master.addresses {
+		if server == "primary" {
+			go master.connectToPrimary()
+		} else if server == "backup" {
+			go master.connectToBackup()
+		} else {
+			fmt.Println("Invalid entry in config file, continuing...")
+		}
+	}
+	time.Sleep(time.Second * 5)
+	fmt.Println("timed out")
+
+	// We need at least two servers to operate.
+	if master.primary == nil || master.backup == nil {
+		fmt.Println("No servers up, waiting for connections...")
+		time.Sleep(time.Second * 2)
+		master.waitForConnections()
+	}
+}
+
+// Parses a config file, and attempts to connect to
+func (master *Master) parseAddresses(file *os.File) {
 	scanner := bufio.NewScanner(file)
-	wait := make(chan bool)
 
 	// Connect to addresses listed in config file.
 	for scanner.Scan() {
 		entry := scanner.Text()
 		// Ignore comments.
 		if entry[0] != '#' {
-			go master.parseLineAndConnect(entry, wait)
+			// Split each entry by server name and address.
+			arr := strings.Split(entry, " ")
+			server := arr[0]
+			address := arr[1]
+			master.addresses[server] = address
 		}
 	}
-	for i := 0; i < 2; i++ {
-		// Wait for goroutines to finish.
-		<-wait
-	}
-	if master.primary == nil {
-		if master.backup == nil {
-			// No servers were found, alternate between polling servers and sleeping.
-			fmt.Println("No servers are up yet, waiting for connections")
-			master.waitForConnections()
-		} else {
-			// Promote the backup to primary.
-			fmt.Println("Promoting backup to primary...")
-			master.primary = master.backup
-			master.backup = nil
-		}
-	}
-}
-
-// Parses a config file, and attempts to connect to
-func (master *Master) parseLineAndConnect(entry string, w chan bool) {
-	// Split each entry by server name and address.
-	arr := strings.Split(entry, " ")
-	server := arr[0]
-	address := arr[1]
-	master.addresses[server] = address
-
-	if server == "primary" {
-		if master.primary != nil {
-			fmt.Println("config/servers: two primaries specified, default to last connection")
-			// TODO: add to backups
-		}
-		// Connect to primary and notify the server that it is indeed a primary.
-		primary, err := net.DialTimeout("tcp", address+":"+SERVER_PORT, time.Second*10)
-		if err != nil {
-			fmt.Println("Couldn't connect to primary:", err)
-		} else {
-			fmt.Println("Connected to primary at address", primary.RemoteAddr())
-			fmt.Fprintln(master.primary, "true")
-			master.primary = primary
-		}
-	} else {
-		// Connect to backup and notify the server that it is not a primary.
-		backup, err := net.DialTimeout("tcp", address+":"+SERVER_PORT, time.Second*10)
-		if err != nil {
-			fmt.Println("Couldn't connect to backup:", err)
-		} else {
-			fmt.Println("Connected to backup at address", backup.RemoteAddr())
-			fmt.Fprintln(master.backup, "false")
-			master.backup = backup
-		}
-	}
-	w <- true
 }
 
 // This is run if no servers are discovered on startup. Alternates between polling and sleeping.
 func (master *Master) waitForConnections() {
-	for master.primary == nil { // || master.backup == nil {
+	for master.primary == nil || master.backup == nil {
 		go master.connectToPrimary()
-		//go master.connectToBackup()
+		go master.connectToBackup()
 		time.Sleep(time.Second * 5)
 	}
 }
 
 // Connects to a primary server, timing out after 10 seconds.
 func (master *Master) connectToPrimary() {
-	primary, err := net.DialTimeout("tcp", master.addresses["primary"]+":"+SERVER_PORT, time.Second*10)
+	primary, err := net.Dial("tcp", master.addresses["primary"]+":"+SERVER_PORT)
 	if err == nil {
-		fmt.Println("Primary is up!")
+		fmt.Println("Primary is up at address", primary.RemoteAddr())
 		fmt.Fprintln(primary, "true")
 		master.primary = primary
 	}
@@ -125,9 +101,9 @@ func (master *Master) connectToPrimary() {
 
 // Connects to a backup server, timing out after 10 seconds.
 func (master *Master) connectToBackup() {
-	backup, err := net.DialTimeout("tcp", master.addresses["backup"]+":"+SERVER_PORT, time.Second*10)
+	backup, err := net.Dial("tcp", master.addresses["backup"]+":"+SERVER_PORT)
 	if err == nil {
-		fmt.Println("Backup is up!")
+		fmt.Println("Backup is up at address", backup.RemoteAddr())
 		fmt.Fprintln(backup, "false")
 		master.backup = backup
 	}
