@@ -87,8 +87,8 @@ func (master *Master) parseLineAndConnect(entry string, w chan bool) {
 			fmt.Println("Couldn't connect to primary:", err)
 		} else {
 			fmt.Println("Connected to primary at address", primary.RemoteAddr())
-			master.primary = primary
 			fmt.Fprintln(master.primary, "true")
+			master.primary = primary
 		}
 	} else {
 		// Connect to backup and notify the server that it is not a primary.
@@ -97,8 +97,8 @@ func (master *Master) parseLineAndConnect(entry string, w chan bool) {
 			fmt.Println("Couldn't connect to backup:", err)
 		} else {
 			fmt.Println("Connected to backup at address", backup.RemoteAddr())
-			master.backup = backup
 			fmt.Fprintln(master.backup, "false")
+			master.backup = backup
 		}
 	}
 	w <- true
@@ -147,7 +147,7 @@ func (master *Master) Serve() {
 		fmt.Println("client connected on address", conn.LocalAddr())
 
 		// Handle client session.
-		sesh := master.run(conn)
+		sesh := session(conn)
 		go master.handleRequests(sesh)
 	}
 }
@@ -158,14 +158,18 @@ func (master *Master) handleRequests(sesh chan string) {
 	in := master.getRepliesFromServer()
 	for {
 		// Send user requests to a primary to execute.
-		request, ok := <-sesh
-		if !ok {
-			return
+		select {
+		case request, ok := <-sesh:
+			if !ok {
+				return
+			}
+			out <- request
+		case response, ok := <-in:
+			if !ok {
+				return
+			}
+			sesh <- response
 		}
-
-		out <- request
-		response := <-in
-		sesh <- response
 	}
 }
 
@@ -204,12 +208,12 @@ func (master *Master) getRepliesFromServer() chan string {
 
 // Client session: gets input from client and sends it to a channel to the master.
 // Each session has its own socket connection.
-func (master *Master) run(session net.Conn) chan string {
+func session(client net.Conn) chan string {
 	c := make(chan string)
 	go func() {
 		// Get input from client user.
-		input := master.getInputFromClient(session)
-		defer session.Close()
+		input := getInputFromClient(client)
+		defer client.Close()
 		defer close(c)
 		for {
 			select {
@@ -221,7 +225,7 @@ func (master *Master) run(session net.Conn) chan string {
 				c <- command
 			case reply := <-c:
 				// Send db server's reply to the user.
-				go master.sendReplyToClient(session, reply)
+				go sendReplyToClient(client, reply)
 			}
 		}
 	}()
@@ -229,15 +233,15 @@ func (master *Master) run(session net.Conn) chan string {
 }
 
 // Gets a database request from the client.
-func (master *Master) getInputFromClient(session net.Conn) chan string {
+func getInputFromClient(client net.Conn) chan string {
 	c := make(chan string)
 	go func() {
-		scanner := bufio.NewScanner(session)
+		scanner := bufio.NewScanner(client)
 		for scanner.Scan() {
 			// Read from connected client.
 			c <- scanner.Text()
 		}
-		fmt.Printf("client at %v disconnected\n", session.LocalAddr())
+		fmt.Printf("client at %v disconnected\n", client.LocalAddr())
 		if err := scanner.Err(); err != nil {
 			fmt.Println(err)
 		}
@@ -246,8 +250,8 @@ func (master *Master) getInputFromClient(session net.Conn) chan string {
 }
 
 // Sends a database response to the client.
-func (master *Master) sendReplyToClient(session net.Conn, reply string) {
-	n, err := fmt.Fprintln(session, reply)
+func sendReplyToClient(client net.Conn, reply string) {
+	n, err := fmt.Fprintln(client, reply)
 	if n == 0 {
 		fmt.Println("client disconnected")
 	}
