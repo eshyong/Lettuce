@@ -12,14 +12,15 @@ import (
 
 const (
 	CLI_CLIENT_PORT = "8000"
-	SERVER_PORT     = "8001"
+	SERVER_PORT     = "8080"
 )
 
 type Master struct {
 	clientListener net.Listener
 	primary        net.Conn
 	backup         net.Conn
-	addresses      map[string]string
+	primAddr       string
+	backAddr       string
 }
 
 func NewMaster() *Master {
@@ -27,7 +28,7 @@ func NewMaster() *Master {
 	if err != nil {
 		log.Fatal("Listen: unable to get a port", err)
 	}
-	master := &Master{clientListener: l, addresses: make(map[string]string)}
+	master := &Master{clientListener: l}
 	master.connectToServers()
 	return master
 }
@@ -41,25 +42,9 @@ func (master *Master) connectToServers() {
 	}
 
 	// Read config file and connect to each address.
+	fmt.Println("Waiting for server connections...")
 	master.parseAddresses(file)
-	for server, _ := range master.addresses {
-		if server == "primary" {
-			go master.connectToPrimary()
-		} else if server == "backup" {
-			go master.connectToBackup()
-		} else {
-			fmt.Println("Invalid entry in config file, continuing...")
-		}
-	}
-	time.Sleep(time.Second * 5)
-	fmt.Println("timed out")
-
-	// We need at least two servers to operate.
-	if master.primary == nil || master.backup == nil {
-		fmt.Println("No servers up, waiting for connections...")
-		time.Sleep(time.Second * 2)
-		master.waitForConnections()
-	}
+	master.waitForConnections()
 }
 
 // Parses a config file, and attempts to connect to
@@ -75,7 +60,13 @@ func (master *Master) parseAddresses(file *os.File) {
 			arr := strings.Split(entry, " ")
 			server := arr[0]
 			address := arr[1]
-			master.addresses[server] = address
+			if server == "primary" {
+				master.primAddr = address
+			} else if server == "backup" {
+				master.backAddr = address
+			} else {
+				fmt.Println("Unrecognized config entry")
+			}
 		}
 	}
 }
@@ -85,26 +76,50 @@ func (master *Master) waitForConnections() {
 	for master.primary == nil || master.backup == nil {
 		go master.connectToPrimary()
 		go master.connectToBackup()
-		time.Sleep(time.Second * 5)
+		time.Sleep(time.Second * 6)
 	}
 }
 
 // Connects to a primary server, timing out after 10 seconds.
 func (master *Master) connectToPrimary() {
-	primary, err := net.Dial("tcp", master.addresses["primary"]+":"+SERVER_PORT)
-	if err == nil {
+	primary, err := net.DialTimeout("tcp", master.primAddr+":"+SERVER_PORT, time.Second*5)
+	if err != nil {
+		fmt.Println(err)
+	} else {
 		fmt.Println("Primary is up at address", primary.RemoteAddr())
-		fmt.Fprintln(primary, "true")
+		n, err := fmt.Fprintln(primary, "true")
+		if n == 0 {
+			fmt.Println("Primary didn't receive message, disconnecting")
+			primary.Close()
+			return
+		}
+		if err != nil {
+			fmt.Println(err)
+			primary.Close()
+			return
+		}
 		master.primary = primary
 	}
 }
 
 // Connects to a backup server, timing out after 10 seconds.
 func (master *Master) connectToBackup() {
-	backup, err := net.Dial("tcp", master.addresses["backup"]+":"+SERVER_PORT)
-	if err == nil {
+	backup, err := net.DialTimeout("tcp", master.backAddr+":"+SERVER_PORT, time.Second*5)
+	if err != nil {
+		fmt.Println(err)
+	} else {
 		fmt.Println("Backup is up at address", backup.RemoteAddr())
-		fmt.Fprintln(backup, "false")
+		n, err := fmt.Fprintln(backup, "false")
+		if n == 0 {
+			fmt.Println("Backup didn't receive message, disconnecting")
+			backup.Close()
+			return
+		}
+		if err != nil {
+			fmt.Println(err)
+			backup.Close()
+			return
+		}
 		master.backup = backup
 	}
 }
