@@ -38,14 +38,26 @@ func (master *Master) WaitForConnections() {
 		if err != nil {
 			fmt.Println("Unable to connect: ", err)
 		}
-		conn.SetDeadline(DEADLINE)
+		conn.SetDeadline(time.Now().Add(DEADLINE))
 		if master.primary == nil {
-			pingServer(conn, "primary")
-			fmt.Println("Primary is running!")
+			message, err := pingServer(conn, "primary")
+			if err != nil {
+				fmt.Println(err)
+				continue
+			}
+			if message == "OK" {
+				fmt.Println("Primary is running!")
+			}
 			master.primary = conn
 		} else if master.backup == nil {
-			pingServer(conn, "backup")
-			fmt.Println("Backup is running!")
+			message, err := pingServer(conn, "backup")
+			if err != nil {
+				fmt.Println(err)
+				continue
+			}
+			if message == "OK" {
+				fmt.Println("Backup is running!")
+			}
 			master.backup = conn
 		}
 	}
@@ -61,6 +73,7 @@ func pingServer(server net.Conn, request string) (string, error) {
 	}
 
 	// ACK
+	fmt.Println("Waiting for ACK...")
 	scanner := bufio.NewScanner(server)
 	scanner.Scan()
 	if err := scanner.Err(); err != nil {

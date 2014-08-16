@@ -41,6 +41,7 @@ func (server *Server) connectToMaster() {
 		if message == "primary" {
 			server.primary = true
 		}
+		fmt.Fprintln(server.master, "ACK:OK")
 	} else {
 		// This should never happen unless someone tries to hijack the server.
 		log.Fatal("Server replied with invalid message " + message + ", aborting")
