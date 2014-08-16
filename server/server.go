@@ -2,9 +2,12 @@ package server
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"log"
 	"net"
+	"os"
+	"strings"
 
 	"github.com/eshyong/lettuce/db"
 )
@@ -16,31 +19,69 @@ type Server struct {
 }
 
 func NewServer() *Server {
-	s := db.NewStore()
-	listener, err := net.Listen("tcp", ":"+SERVER_PORT)
-	if err != nil {
-		log.Fatal("Unable to start server.", err)
-	}
-	defer listener.Close()
+	return &Server{master: nil, store: db.NewStore(), primary: false}
+}
 
-	fmt.Println("Waiting for master to connect...")
-	conn, err := listener.Accept()
+func (server *Server) connectToMaster() {
+	master, err := readConfig()
 	if err != nil {
-		log.Fatal("Unable to connect to master.", err)
+		log.Fatal(err)
 	}
-
-	dbServer := &Server{master: conn, store: s, primary: false}
-	scanner := bufio.NewScanner(conn)
-	scanner.Scan()
-	if err := scanner.Err(); err != nil {
-		fmt.Println("Could not receive message from master.")
+	conn, err := net.DialTimeout("tcp", master+":"+SERVER_PORT, TIMEOUT)
+	if err != nil {
+		log.Fatal("Could not connect to master ", err)
+	}
+	server.master = conn
+	message, err := server.getPing()
+	if err != nil {
+		log.Fatal(err)
+	}
+	if message == "primary" {
+		fmt.Println("Confirmed as primary.")
+		server.primary = true
+	} else if message == "backup" {
+		fmt.Println("Confirmed as backup.")
+		server.primary = false
 	} else {
-		if scanner.Text() == "true" {
-			fmt.Println("Confirmed as primary.")
-			dbServer.primary = true
+		// This should never happen unless someone tries to hijack the server.
+		log.Fatal("Server replied with invalid message " + message + ", aborting")
+	}
+	fmt.Println("DB up! Running")
+}
+
+func readConfig() (string, error) {
+	file, err := os.Open("master.config")
+	if err != nil {
+		return "", err
+	}
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.Trim(scanner.Text(), " ")
+		if line[0] != '#' {
+			arr := strings.Split(line, " ")
+			name := arr[0]
+			address := arr[1]
+			if name == "master" {
+				return address, nil
+			}
 		}
 	}
-	return dbServer
+	return "", errors.New("couldn't find address in master.config")
+}
+
+func (server *Server) getPing() (string, error) {
+	scanner := bufio.NewScanner(server.master)
+	scanner.Scan()
+	if err := scanner.Err(); err != nil {
+		return "", errors.New("Could not receive SYN from server")
+	}
+	message := strings.Split(scanner.Text(), ":")
+	header := message[0]
+	body := message[1]
+	if header != "SYN" {
+		fmt.Println("Unrecognized response from server")
+	}
+	return body, nil
 }
 
 func (server *Server) getInput() chan string {
@@ -79,6 +120,7 @@ func (server *Server) sendReply() chan string {
 }
 
 func (server *Server) Serve() {
+	server.connectToMaster()
 	fmt.Println("DB server running!")
 	in := server.getInput()
 	out := server.sendReply()

@@ -1,3 +1,0 @@
-# Add the IP addresses of your machines here
-primary 127.0.0.1
-backup 127.0.0.1
