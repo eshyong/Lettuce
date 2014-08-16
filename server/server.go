@@ -36,17 +36,15 @@ func (server *Server) connectToMaster() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if message == "primary" {
-		fmt.Println("Confirmed as primary.")
-		server.primary = true
-	} else if message == "backup" {
-		fmt.Println("Confirmed as backup.")
-		server.primary = false
+	if message == "primary" || message == "backup" {
+		fmt.Println("Confirmed as " + message + ".")
+		if message == "primary" {
+			server.primary = true
+		}
 	} else {
 		// This should never happen unless someone tries to hijack the server.
 		log.Fatal("Server replied with invalid message " + message + ", aborting")
 	}
-	fmt.Println("DB up! Running")
 }
 
 func readConfig() (string, error) {
@@ -79,7 +77,7 @@ func (server *Server) getPing() (string, error) {
 	header := message[0]
 	body := message[1]
 	if header != "SYN" {
-		fmt.Println("Unrecognized response from server")
+		fmt.Println("Unrecognized reply from server")
 	}
 	return body, nil
 }

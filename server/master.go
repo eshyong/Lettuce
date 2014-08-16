@@ -38,6 +38,7 @@ func (master *Master) WaitForConnections() {
 		if err != nil {
 			fmt.Println("Unable to connect: ", err)
 		}
+		conn.SetDeadline(DEADLINE)
 		if master.primary == nil {
 			pingServer(conn, "primary")
 			fmt.Println("Primary is running!")
