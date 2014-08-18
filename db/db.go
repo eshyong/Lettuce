@@ -102,7 +102,7 @@ func (store *Store) Execute(request string) string {
 	function := strings.ToLower(args[0])
 	exec, ok := funcmap[function]
 	if !ok {
-		return "nop: no such function"
+		return "ERR no such function"
 	}
 	// Keep a log of every passed transaction, and call the function.
 	store.logRecord(request)
