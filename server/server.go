@@ -12,6 +12,9 @@ import (
 	"github.com/eshyong/lettuce/db"
 )
 
+// For testing
+const LOCALHOST = "127.0.0.1"
+
 type Server struct {
 	master  net.Conn
 	store   *db.Store
@@ -23,11 +26,11 @@ func NewServer() *Server {
 }
 
 func (server *Server) connectToMaster() {
-	master, err := readConfig()
+	/* master, err := readConfig()
 	if err != nil {
 		log.Fatal(err)
-	}
-	conn, err := net.DialTimeout("tcp", master+":"+SERVER_PORT, TIMEOUT)
+	} */
+	conn, err := net.DialTimeout("tcp", LOCALHOST+":"+SERVER_PORT, TIMEOUT)
 	if err != nil {
 		log.Fatal("Could not connect to master ", err)
 	}
@@ -83,27 +86,54 @@ func (server *Server) getPing() (string, error) {
 	return body, nil
 }
 
+func (server *Server) Serve() {
+	server.connectToMaster()
+	fmt.Println("DB server running!")
+	in := server.getInput()
+	out := server.sendReply()
+	for {
+		message, ok := <-in
+		if !ok {
+			break
+		}
+		arr := strings.Split(message, ":")
+		if len(arr) < 2 {
+			fmt.Println("Invalid request:", arr)
+			out <- "ERR internal error"
+		} else {
+			header := arr[0]
+			request := arr[1]
+			if header == "SYN" && request == "primary" {
+				out <- "ACK:OK"
+			} else {
+				reply := header + ":" + server.store.Execute(request)
+				out <- reply
+			}
+		}
+	}
+}
+
 func (server *Server) getInput() chan string {
-	c := make(chan string)
+	serverIn := make(chan string)
 	go func() {
-		defer close(c)
+		defer close(serverIn)
 		scanner := bufio.NewScanner(server.master)
 		for scanner.Scan() {
-			c <- scanner.Text()
+			serverIn <- scanner.Text()
 		}
 		if err := scanner.Err(); err != nil {
-			fmt.Println("Error", err)
+			fmt.Println("getInput()", err)
 		}
 	}()
-	return c
+	return serverIn
 }
 
 func (server *Server) sendReply() chan string {
-	c := make(chan string)
+	serverOut := make(chan string)
 	go func() {
+		defer close(serverOut)
 		for {
-			defer close(c)
-			reply := <-c
+			reply := <-serverOut
 			n, err := fmt.Fprintln(server.master, reply)
 			if n == 0 {
 				fmt.Println("Master disconnected")
@@ -115,20 +145,5 @@ func (server *Server) sendReply() chan string {
 			}
 		}
 	}()
-	return c
-}
-
-func (server *Server) Serve() {
-	server.connectToMaster()
-	fmt.Println("DB server running!")
-	in := server.getInput()
-	out := server.sendReply()
-	for {
-		request, ok := <-in
-		if !ok {
-			break
-		}
-		reply := server.store.Execute(request)
-		out <- reply
-	}
+	return serverOut
 }

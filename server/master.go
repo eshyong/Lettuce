@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -18,12 +20,18 @@ const (
 )
 
 type Master struct {
-	primary net.Conn
-	backup  net.Conn
+	// DB servers that master manages.
+	primary   net.Conn
+	backup    net.Conn
+	serverIn  <-chan string
+	serverOut chan<- string
+	sessions  map[string]chan<- string
+	up        bool
+	counter   uint64
 }
 
 func NewMaster() *Master {
-	return &Master{primary: nil, backup: nil}
+	return &Master{primary: nil, backup: nil, sessions: make(map[string]chan<- string), up: true, counter: 0}
 }
 
 // This is run if no servers are discovered on startup. Alternates between polling and sleeping.
@@ -33,13 +41,20 @@ func (master *Master) WaitForConnections() {
 	if err != nil {
 		log.Fatal("Unable to get a socket: ", err)
 	}
+	defer listener.Close()
+
+	// Wait until a primary and a backup connect.
 	for master.primary == nil || master.backup == nil {
 		conn, err := listener.Accept()
 		if err != nil {
 			fmt.Println("Unable to connect: ", err)
 		}
-		conn.SetDeadline(time.Now().Add(DEADLINE))
+
+		// Set timeout deadlines on connections.
+		// conn.SetDeadline(time.Now().Add(DEADLINE))
+
 		if master.primary == nil {
+			// Connect primary first.
 			message, err := pingServer(conn, "primary")
 			if err != nil {
 				fmt.Println(err)
@@ -50,6 +65,7 @@ func (master *Master) WaitForConnections() {
 			}
 			master.primary = conn
 		} else if master.backup == nil {
+			// Then our backup
 			message, err := pingServer(conn, "backup")
 			if err != nil {
 				fmt.Println(err)
@@ -91,8 +107,14 @@ func (master *Master) Serve() {
 		log.Fatal("Couldn't get a socket: ", err)
 	}
 	defer listener.Close()
-	fmt.Println("Welcome to lettuce! You can connect to this database by " +
-		"running `lettuce-cli` in another window.")
+
+	// Create channels to listen on primary.
+	master.serverIn = master.getServerReplies()
+	master.serverOut = master.sendServerRequests()
+	defer close(master.serverOut)
+
+	// Funnel requests into a multiplexer.
+	mux := master.funnelRequests()
 	for {
 		// Grab a connection.
 		conn, err := listener.Accept()
@@ -101,116 +123,193 @@ func (master *Master) Serve() {
 		}
 		fmt.Println("client connected on address", conn.LocalAddr())
 
-		// Handle client session.
-		sesh := session(conn)
-		go master.handleRequests(sesh)
+		// Create a new session ID, and add the session to our multiplexer set.
+		id := "session" + strconv.FormatUint(master.counter, 10)
+		master.sessions[id] = session(conn, mux, id)
+		master.counter += 1
 	}
 }
 
-// Middleman function that shuttles data from client to the server.
-func (master *Master) handleRequests(sesh chan string) {
-	out := master.sendRequestsToServer()
-	in := master.getRepliesFromServer()
-	for {
-		// Send user requests to a primary to execute.
-		select {
-		case request, ok := <-sesh:
-			if !ok {
-				return
+// Creates a multiplexer for all client sessions to write to. Dispatches to the primary
+// server, and determines which session channel to write back to.
+func (master *Master) funnelRequests() chan<- string {
+	multiplexer := make(chan string)
+	go func() {
+		defer close(multiplexer)
+	loop:
+		for {
+			select {
+			case request, _ := <-multiplexer:
+				// Send any sessions request to the server.
+				arr := strings.Split(request, ":")
+				if len(arr) < 2 {
+					fmt.Println("Invalid request", arr)
+					break
+				}
+				sender := arr[0]
+				body := arr[1]
+				if body == "CLOSED" {
+					// One of our client connections closed, delete the mapped value.
+					delete(master.sessions, sender)
+				} else {
+					master.serverOut <- request
+				}
+			case reply, ok := <-master.serverIn:
+				// Get a server reply, and determine which session to send to.
+				if !ok {
+					fmt.Println("Server down, attempting recovery")
+					goto recovery
+				}
+				arr := strings.Split(reply, ":")
+				if len(arr) < 2 {
+					fmt.Println("Invalid reply", arr)
+				} else {
+					// session#NUM:reply -> "send reply to session#NUM"
+					recipient := arr[0]
+					body := arr[1]
+					if channel, in := master.sessions[recipient]; in {
+						channel <- body
+					}
+				}
 			}
-			out <- request
-		case response, ok := <-in:
-			if !ok {
-				return
-			}
-			sesh <- response
 		}
+	recovery:
+		// Our primary is down, initiate recovery.
+		if master.promoteBackup() {
+			goto loop
+		}
+		fmt.Println("Unable to recover")
+		syscall.Exit(1)
+	}()
+	return multiplexer
+}
+
+func (master *Master) promoteBackup() bool {
+	if master.backup == nil {
+		master.WaitForConnections()
+	}
+	message, err := pingServer(master.backup, "primary")
+	if err != nil {
+		fmt.Println("Ping failed!")
+		return false
+	} else {
+		if message == "OK" {
+			// Assign primary to backup.
+			fmt.Println("Promotion success")
+			master.primary = master.backup
+			master.backup = nil
+
+			// Wait for backup to come online.
+
+			// Create new channels for server.
+			master.serverIn = master.getServerReplies()
+			return true
+		}
+		fmt.Println("Server denied request")
+		return false
 	}
 }
 
-// Asks the server to execute a user command.
-func (master *Master) sendRequestsToServer() chan string {
-	c := make(chan string)
+func (master *Master) sendServerRequests() chan<- string {
+	serverOut := make(chan string)
 	go func() {
 		for {
-			request := <-c
-			n, err := fmt.Fprintln(master.primary, request)
-			if n == 0 {
-				fmt.Println("Server down")
+			request, ok := <-serverOut
+			if !ok {
+				break
 			}
-			if err != nil {
-				fmt.Println(err)
+			n, err := fmt.Fprintln(master.primary, request)
+			if n == 0 || err != nil {
+				fmt.Println("sendServerRequest()", err)
+				break
 			}
 		}
 	}()
-	return c
+	return serverOut
 }
 
-// Gets a response from the server.
-func (master *Master) getRepliesFromServer() chan string {
-	c := make(chan string)
+func (master *Master) getServerReplies() <-chan string {
+	serverIn := make(chan string)
 	go func() {
+		defer close(serverIn)
 		scanner := bufio.NewScanner(master.primary)
 		for scanner.Scan() {
-			c <- scanner.Text()
+			serverIn <- scanner.Text()
 		}
 		if err := scanner.Err(); err != nil {
-			fmt.Println(err)
+			fmt.Println("getServerReply():", err)
 		}
 	}()
-	return c
+	return serverIn
 }
 
 // Client session: gets input from client and sends it to a channel to the master.
 // Each session has its own socket connection.
-func session(client net.Conn) chan string {
-	c := make(chan string)
+func session(client net.Conn, mux chan<- string, id string) chan<- string {
+	session := make(chan string)
 	go func() {
-		// Get input from client user.
-		input := getInputFromClient(client)
+		// Get IO from client user.
+		clientIn := getInputFromClient(client)
+		clientOut := sendReplyToClient(client)
 		defer client.Close()
-		defer close(c)
+		defer close(clientOut)
+
+		// TODO: associate client IDs for each session.
+	loop:
 		for {
+			// Shuttle data between server and client.
 			select {
-			case command, ok := <-input:
-				// Send to db server.
+			case request, ok := <-clientIn:
 				if !ok {
-					return
+					break loop
 				}
-				c <- command
-			case reply := <-c:
-				// Send db server's reply to the user.
-				go sendReplyToClient(client, reply)
+				request = id + ":" + request
+				mux <- request
+			case reply, ok := <-session:
+				if !ok {
+					break loop
+				}
+				clientOut <- reply
+			}
+		}
+		mux <- id + ":CLOSED"
+		fmt.Printf("Client at %v disconnected\n", client.LocalAddr())
+	}()
+	return session
+}
+
+// Creates a read-only channel to consume input from the client.
+func getInputFromClient(client net.Conn) <-chan string {
+	clientIn := make(chan string)
+	go func() {
+		defer close(clientIn)
+
+		// Scan each line of input and feed it into the channel.
+		scanner := bufio.NewScanner(client)
+		for scanner.Scan() {
+			clientIn <- scanner.Text()
+		}
+		if err := scanner.Err(); err != nil {
+			fmt.Println("getInputFromClient():", err)
+		}
+	}()
+	return clientIn
+}
+
+func sendReplyToClient(client net.Conn) chan<- string {
+	clientOut := make(chan string)
+	go func() {
+		for {
+			reply, ok := <-clientOut
+			if !ok {
+				break
+			}
+			n, err := fmt.Fprintln(client, reply)
+			if n == 0 || err != nil {
+				fmt.Println("sendReplyToClient():", err)
+				break
 			}
 		}
 	}()
-	return c
-}
-
-// Gets a database request from the client.
-func getInputFromClient(client net.Conn) chan string {
-	c := make(chan string)
-	go func() {
-		scanner := bufio.NewScanner(client)
-		for scanner.Scan() {
-			// Read from connected client.
-			c <- scanner.Text()
-		}
-		fmt.Printf("client at %v disconnected\n", client.LocalAddr())
-		if err := scanner.Err(); err != nil {
-			fmt.Println(err)
-		}
-	}()
-	return c
-}
-
-// Sends a database response to the client.
-func sendReplyToClient(client net.Conn, reply string) {
-	n, err := fmt.Fprintln(client, reply)
-	if n == 0 {
-		fmt.Println("client disconnected")
-	}
-	if err != nil {
-		fmt.Println(err)
-	}
+	return clientOut
 }
