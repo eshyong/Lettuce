@@ -8,7 +8,7 @@ import (
 
 func main() {
 	s := server.NewMaster()
-	s.WaitForConnections()
+	s.SetupServers()
 	fmt.Println("Welcome to lettuce! You can connect to this database by " +
 		"running `lettuce-cli` in another window.")
 	s.Serve()

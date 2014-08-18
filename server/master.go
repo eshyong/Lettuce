@@ -9,14 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"time"
-)
-
-const (
-	CLI_CLIENT_PORT = "8000"
-	DEADLINE        = time.Second * 10
-	TIMEOUT         = time.Second * 5
-	SERVER_PORT     = "8080"
 )
 
 type Master struct {
@@ -35,7 +27,7 @@ func NewMaster() *Master {
 }
 
 // This is run if no servers are discovered on startup. Alternates between polling and sleeping.
-func (master *Master) WaitForConnections() {
+func (master *Master) SetupServers() {
 	fmt.Println("Waiting for server connections...")
 	listener, err := net.Listen("tcp", ":"+SERVER_PORT)
 	if err != nil {
@@ -49,9 +41,6 @@ func (master *Master) WaitForConnections() {
 		if err != nil {
 			fmt.Println("Unable to connect: ", err)
 		}
-
-		// Set timeout deadlines on connections.
-		// conn.SetDeadline(time.Now().Add(DEADLINE))
 
 		if master.primary == nil {
 			// Connect primary first.
@@ -76,6 +65,10 @@ func (master *Master) WaitForConnections() {
 			}
 			master.backup = conn
 		}
+	}
+	message, err := pingServer(master.primary, "backup="+LOCALHOST+":"+SERVER_PORT)
+	if err != nil {
+		log.Fatal(err)
 	}
 }
 

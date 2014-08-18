@@ -12,9 +12,6 @@ import (
 	"github.com/eshyong/lettuce/db"
 )
 
-// For testing
-const LOCALHOST = "127.0.0.1"
-
 type Server struct {
 	master  net.Conn
 	store   *db.Store
@@ -132,17 +129,21 @@ func (server *Server) sendReply() chan string {
 	serverOut := make(chan string)
 	go func() {
 		defer close(serverOut)
+		var err error
 		for {
-			reply := <-serverOut
-			n, err := fmt.Fprintln(server.master, reply)
-			if n == 0 {
-				fmt.Println("Master disconnected")
+			reply, ok := <-serverOut
+			if !ok {
 				break
 			}
-			if err != nil {
-				fmt.Println(err)
+			var n int
+			n, err = fmt.Fprintln(server.master, reply)
+			if n == 0 || err != nil {
 				break
 			}
+		}
+		fmt.Println("Master disconnected")
+		if err != nil {
+			fmt.Println(err)
 		}
 	}()
 	return serverOut
