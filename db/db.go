@@ -56,7 +56,7 @@ func NewStore() *Store {
 		logs:        make([]Record, 0, INITIAL_LOG_CAPACITY),
 		lock:        sync.Mutex{}}
 	// Try to read a database dump if one exists.
-	file, err := os.Open("config/dump")
+	file, err := os.Open("dump")
 	if err != nil {
 		fmt.Println("No existing database found.")
 	} else {
@@ -92,17 +92,20 @@ func (store *Store) Flush() {
 }
 
 func (store *Store) Execute(request string) string {
+	return store.dispatch(request)
+}
+
+func (store *Store) dispatch(request string) string {
 	if request == "" {
 		return request
 	}
 
 	// Commands are case insensitive, but arguments are not.
-	request = strings.Trim(request, " ")
 	args := strings.Split(request, " ")
 	function := strings.ToLower(args[0])
 	exec, ok := funcmap[function]
 	if !ok {
-		return "ERR no such function"
+		return "nop: no such function"
 	}
 	// Keep a log of every passed transaction, and call the function.
 	store.logRecord(request)
@@ -116,7 +119,7 @@ func (store *Store) logRecord(r string) {
 
 func (store *Store) writeLogs() {
 	// Logs are append-only, and keep a complete record of all transactions in history.
-	file, err := os.OpenFile("config/log", os.O_WRONLY|os.O_CREATE|os.O_APPEND|os.O_SYNC, 0660)
+	file, err := os.OpenFile("log", os.O_WRONLY|os.O_CREATE|os.O_APPEND|os.O_SYNC, 0660)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -131,7 +134,7 @@ func (store *Store) writeLogs() {
 
 func (store *Store) writeDump() {
 	// Dumps are overwritten each time the server is closed.
-	file, err := os.Create("config/dump")
+	file, err := os.Create("dump")
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -8,7 +8,6 @@ import (
 	"net"
 	"strconv"
 	"strings"
-	"syscall"
 )
 
 type Master struct {
@@ -27,7 +26,7 @@ func NewMaster() *Master {
 }
 
 // This is run if no servers are discovered on startup. Alternates between polling and sleeping.
-func (master *Master) SetupServers() {
+func (master *Master) WaitForConnections() {
 	fmt.Println("Waiting for server connections...")
 	listener, err := net.Listen("tcp", ":"+SERVER_PORT)
 	if err != nil {
@@ -49,24 +48,25 @@ func (master *Master) SetupServers() {
 				fmt.Println(err)
 				continue
 			}
-			if message == "OK" {
+			if message == OK {
 				fmt.Println("Primary is running!")
 			}
 			master.primary = conn
 		} else if master.backup == nil {
-			// Then our backup
+			// Then connect the backup.
 			message, err := pingServer(conn, "backup")
 			if err != nil {
 				fmt.Println(err)
 				continue
 			}
-			if message == "OK" {
+			if message == OK {
 				fmt.Println("Backup is running!")
 			}
 			master.backup = conn
 		}
 	}
-	message, err := pingServer(master.primary, "backup="+LOCALHOST+":"+SERVER_PORT)
+	// Notify the backup servers to connect to the master.
+	message, err := pingServer(master.backup, "primary="+LOCALHOST+":"+SERVER_PORT)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -139,8 +139,7 @@ func (master *Master) funnelRequests() chan<- string {
 					fmt.Println("Invalid request", arr)
 					break
 				}
-				sender := arr[0]
-				body := arr[1]
+				sender, body := arr[0], arr[1]
 				if body == "CLOSED" {
 					// One of our client connections closed, delete the mapped value.
 					delete(master.sessions, sender)
@@ -150,8 +149,7 @@ func (master *Master) funnelRequests() chan<- string {
 			case reply, ok := <-master.serverIn:
 				// Get a server reply, and determine which session to send to.
 				if !ok {
-					fmt.Println("Server down, attempting recovery")
-					goto recovery
+					break loop
 				}
 				arr := strings.Split(reply, ":")
 				if len(arr) < 2 {
@@ -166,13 +164,6 @@ func (master *Master) funnelRequests() chan<- string {
 				}
 			}
 		}
-	recovery:
-		// Our primary is down, initiate recovery.
-		if master.promoteBackup() {
-			goto loop
-		}
-		fmt.Println("Unable to recover")
-		syscall.Exit(1)
 	}()
 	return multiplexer
 }
@@ -186,7 +177,7 @@ func (master *Master) promoteBackup() bool {
 		fmt.Println("Ping failed!")
 		return false
 	} else {
-		if message == "OK" {
+		if message == OK {
 			// Assign primary to backup.
 			fmt.Println("Promotion success")
 			master.primary = master.backup
@@ -211,6 +202,7 @@ func (master *Master) sendServerRequests() chan<- string {
 			if !ok {
 				break
 			}
+			// Write requests to the server.
 			n, err := fmt.Fprintln(master.primary, request)
 			if n == 0 || err != nil {
 				fmt.Println("sendServerRequest()", err)
@@ -227,6 +219,7 @@ func (master *Master) getServerReplies() <-chan string {
 		defer close(serverIn)
 		scanner := bufio.NewScanner(master.primary)
 		for scanner.Scan() {
+			// Send server replies back down the channel.
 			serverIn <- scanner.Text()
 		}
 		if err := scanner.Err(); err != nil {
@@ -256,12 +249,14 @@ func session(client net.Conn, mux chan<- string, id string) chan<- string {
 				if !ok {
 					break loop
 				}
+				// Request format "ID:request".
 				request = id + ":" + request
 				mux <- request
 			case reply, ok := <-session:
 				if !ok {
 					break loop
 				}
+				// No demarshaling required on the client side.
 				clientOut <- reply
 			}
 		}
@@ -293,6 +288,7 @@ func sendReplyToClient(client net.Conn) chan<- string {
 	clientOut := make(chan string)
 	go func() {
 		for {
+			// Send replies to client.
 			reply, ok := <-clientOut
 			if !ok {
 				break
