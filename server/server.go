@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/eshyong/lettuce/db"
+	"github.com/eshyong/lettuce/utils"
 )
 
 type Server struct {
@@ -33,47 +34,11 @@ func (server *Server) ConnectToMaster() {
 		log.Fatal(err)
 	} */
 	// Connect to the master server.
-	conn, err := net.DialTimeout("tcp", LOCALHOST+":"+SERVER_PORT, TIMEOUT)
+	conn, err := net.DialTimeout("tcp", utils.LOCALHOST+utils.DELIMITER+utils.SERVER_PORT, utils.TIMEOUT)
 	if err != nil {
 		log.Fatal("Could not connect to master ", err)
 	}
 	server.master = conn
-}
-
-func (server *Server) Setup() {
-	server.ConnectToMaster()
-
-	// Check if we are primary or backup.
-	message, err := server.getPing()
-	if err != nil {
-		log.Fatal(err)
-	}
-	if message != "primary" && message != "backup" {
-		// Some invalid protocol message.
-		log.Fatal("Server replied with invalid message " + message + ", aborting")
-	}
-	// Acknowledge the request.
-	fmt.Fprintln(server.master, ACK+DELIMITER+OK)
-
-	// Return true for primary and false for backup.
-	fmt.Println("Confirmed as " + message + ".")
-	if message == "primary" {
-		server.isPrimary = true
-	} else {
-		// Wait for to send us the address of primary.
-		message, err := server.getPing()
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		// Establish a connection with primary.
-		conn, err := net.Dial("tcp", message+":"+SERVER_PORT)
-		if err != nil {
-			log.Fatal("Unable to connect to primary: ", err)
-		}
-
-		server.primary = conn
-	}
 }
 
 func readConfig() (string, error) {
@@ -101,17 +66,10 @@ func readConfig() (string, error) {
 }
 
 func (server *Server) Serve() {
-	masterIn := server.getRequestsFromServer(server.master)
-	masterOut := server.sendRepliesToServer(server.master)
+	masterIn := utils.InChanFromConn(server.master, "master")
+	masterOut := utils.OutChanFromConn(server.master, "master")
 
-	var otherIn, otherOut chan string
-	if server.primary != nil {
-		otherIn = server.getRequestsFromServer(server.primary)
-		otherOut = server.sendRepliesToServer(server.primary)
-	} else if server.backup != nil {
-		otherIn = server.getRequestsFromServer(server.backup)
-		otherOut = server.sendRepliesToServer(server.backup)
-	}
+	//	otherIn, otherOut := server.connectToOther()
 
 loop:
 	for {
@@ -122,95 +80,73 @@ loop:
 				break loop
 			}
 			server.handleMasterRequests(masterOut, message)
-		case ping, ok := <-otherIn:
+			/*case ping, ok := <-otherIn:
 			if !ok {
 				break loop
 			}
-			server.handleOtherPing(otherOut, ping)
+			server.handleOtherPing(otherOut, ping) */
 		}
 
 	}
 }
 
-func (server *Server) handleMasterRequests(out chan string, message string) {
+func (server *Server) connectToOther() (<-chan string, chan<- string) {
+	var in <-chan string
+	var out chan<- string
+	if server.isPrimary {
+		in = utils.InChanFromConn(server.backup, "backup")
+		out = utils.OutChanFromConn(server.backup, "backup")
+	} else {
+		in = utils.InChanFromConn(server.primary, "primary")
+		out = utils.OutChanFromConn(server.primary, "primary")
+	}
+	return in, out
+}
+
+func (server *Server) handleMasterRequests(out chan<- string, message string) {
 	// Messages have the format 'HEADER:REQUEST'
-	arr := strings.Split(message, ":")
+	arr := strings.Split(message, utils.DELIMITER)
 	if len(arr) < 2 {
 		fmt.Println("Invalid request:", arr)
-		out <- ERR + DELIMITER + INVALID
-		continue
+		out <- utils.ERR + utils.DELIMITER + utils.INVALID
+		return
 	}
+	fmt.Println(message)
 
 	// Handle a message from the server or a master request.
 	header, request := arr[0], arr[1]
-	if header == SYN {
-		handleMasterPing(out, request)
-	} else if header.contains(SESSION) {
-		reply := header + DELIMITER + server.store.Execute(request)
+	if header == utils.SYN {
+		// SYN message
+		server.handleMasterPing(out, request)
+	} else if strings.Contains(header, utils.CLIENT) {
+		// Client request
+		reply := header + utils.DELIMITER + server.store.Execute(request)
 		out <- reply
 	} else {
-		// Invalid request.
-		out <- ERR + DELIMITER + INVALID
+		// Invalid request
+		out <- utils.ERR + utils.DELIMITER + utils.INVALID
 	}
 }
 
-func (server *Server) handleMasterPing(out chan string, request string) {
-	if request == PROMOTE {
-		// TODO: Check if you are the primary. If so, then we reject this request.
-		// Otherwise, we reply with an ACK.
+func (server *Server) handleMasterPing(out chan<- string, request string) {
+	if request == utils.PROMOTE {
+		// TODO: Check if server is already the primary. If so, then we reject this request.
+		// Otherwise, we reply with status code OK.
 		if server.isPrimary {
-			out <- ACK + DELIMITER + NEG
+			out <- utils.ACK + utils.DELIMITER + utils.NEG
 		} else {
-			out <- ACK + DELIMITER + OK
+			out <- utils.ACK + utils.DELIMITER + utils.OK
 		}
-	} else if request == STATUS {
+	} else if request == utils.STATUS {
 		// Ping to check status?
-		out <- ACK + DELIMITER + OK
+		out <- utils.ACK + utils.DELIMITER + utils.OK
 	} else {
 		// Some invalid message not covered by our protocol.
 		fmt.Println("Invalid request " + request)
-		out <- ERR + DELIMITER + INVALID
+		out <- utils.ERR + utils.DELIMITER + utils.INVALID
 	}
 }
 
-func (server *Server) handleOtherPing(out chan string, request string) {
+func (server *Server) handleOtherPing(out chan<- string, request string) {
 
-}
-
-func (server *Server) getRequestsFromServer(conn net.Conn) chan string {
-	serverIn := make(chan string)
-	go func() {
-		defer close(serverIn)
-		scanner := bufio.NewScanner(conn)
-		for scanner.Scan() {
-			serverIn <- scanner.Text()
-		}
-		if err := scanner.Err(); err != nil {
-			fmt.Println("*Server.getRequestsFromServer() ", err)
-		}
-	}()
-	return serverIn
-}
-
-func (server *Server) sendRepliesToServer(conn net.Conn) chan string {
-	serverOut := make(chan string)
-	go func() {
-		defer close(serverOut)
-		for {
-			// Get a reply from the main loop.
-			reply, ok := <-serverOut
-			if !ok {
-				break
-			}
-
-			// Send replies to the master server.
-			n, err := fmt.Fprintln(conn, reply)
-			if n == 0 || err != nil {
-				fmt.Println("*Server.sendRepliesToServer() ", err)
-				break
-			}
-		}
-		fmt.Println("Master disconnected, shutting down...")
-	}()
-	return serverOut
 }
