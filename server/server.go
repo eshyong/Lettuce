@@ -15,19 +15,17 @@ import (
 
 type Server struct {
 	// Server can either have a backup or a primary, but not both.
-	master  net.Conn
-	store   *db.Store
-	primary net.Conn
-	// TODO: allow any arbitrary number of backups.
-	backup    net.Conn
+	master net.Conn
+	store  *db.Store
+	// TODO: allow any arbitrary number of peers.
+	peer      net.Conn
 	isPrimary bool
 }
 
 func NewServer() *Server {
-	return &Server{master: nil, store: db.NewStore(), primary: nil, backup: nil, isPrimary: false}
+	return &Server{master: nil, store: db.NewStore(), peer: nil, isPrimary: false}
 }
 
-// Returns true if this computer is designated as a primary.
 func (server *Server) ConnectToMaster() {
 	/* master, err := readConfig()
 	if err != nil {
@@ -69,7 +67,14 @@ func (server *Server) Serve() {
 	masterIn := utils.InChanFromConn(server.master, "master")
 	masterOut := utils.OutChanFromConn(server.master, "master")
 
-	//	otherIn, otherOut := server.connectToOther()
+	/* var name string
+	if server.isPrimary {
+		name = "backup"
+	} else {
+		name = "primary"
+	}
+	peerIn := utils.InChanFromConn(server.peer, name)
+	peerOut := utils.OutChanFromConn(server.peer, name) */
 
 loop:
 	for {
@@ -79,74 +84,113 @@ loop:
 			if !ok {
 				break loop
 			}
-			server.handleMasterRequests(masterOut, message)
-			/*case ping, ok := <-otherIn:
-			if !ok {
-				break loop
+			err := server.handleMasterRequests(masterOut, message)
+			if err != nil {
+				fmt.Println(err)
 			}
-			server.handleOtherPing(otherOut, ping) */
+			/*		case message, ok := <-peerIn:
+					if !ok {
+						break loop
+					}
+					err := server.handlePeerMessage(peerOut, message)
+					if err != nil {
+						fmt.Println(err)
+					} */
 		}
-
 	}
 }
 
-func (server *Server) connectToOther() (<-chan string, chan<- string) {
-	var in <-chan string
-	var out chan<- string
-	if server.isPrimary {
-		in = utils.InChanFromConn(server.backup, "backup")
-		out = utils.OutChanFromConn(server.backup, "backup")
-	} else {
-		in = utils.InChanFromConn(server.primary, "primary")
-		out = utils.OutChanFromConn(server.primary, "primary")
-	}
-	return in, out
-}
-
-func (server *Server) handleMasterRequests(out chan<- string, message string) {
+func (server *Server) handleMasterRequests(masterOut chan<- string, message string) error {
 	// Messages have the format 'HEADER:REQUEST'
 	arr := strings.Split(message, utils.DELIMITER)
 	if len(arr) < 2 {
-		fmt.Println("Invalid request:", arr)
-		out <- utils.ERR + utils.DELIMITER + utils.INVALID
-		return
+		masterOut <- utils.ERRDEL + utils.INVALID
+		return errors.New("Invalid request: " + message)
 	}
-	fmt.Println(message)
+	fmt.Println("master message:", message)
 
 	// Handle a message from the server or a master request.
 	header, request := arr[0], arr[1]
 	if header == utils.SYN {
 		// SYN message
-		server.handleMasterPing(out, request)
+		return server.handleMasterPing(masterOut, request)
 	} else if strings.Contains(header, utils.CLIENT) {
 		// Client request
+		if !server.isPrimary {
+			// Refuse request as backup.
+			masterOut <- utils.ERRDEL + utils.NEG
+			return errors.New("Not primary: " + request)
+		}
 		reply := header + utils.DELIMITER + server.store.Execute(request)
-		out <- reply
+		//		peerOut <- utils.SYNDEL + utils.DIFF + "=" + request
+		masterOut <- reply
 	} else {
 		// Invalid request
-		out <- utils.ERR + utils.DELIMITER + utils.INVALID
+		masterOut <- utils.ERRDEL + utils.UNKNOWN
+		return errors.New("Unrecognized request: " + request)
 	}
+	return nil
 }
 
-func (server *Server) handleMasterPing(out chan<- string, request string) {
+func (server *Server) handleMasterPing(out chan<- string, request string) error {
 	if request == utils.PROMOTE {
-		// TODO: Check if server is already the primary. If so, then we reject this request.
-		// Otherwise, we reply with status code OK.
 		if server.isPrimary {
-			out <- utils.ACK + utils.DELIMITER + utils.NEG
+			// This server is already a primary, so we reject the request.
+			out <- utils.ACKDEL + utils.NEG
 		} else {
-			out <- utils.ACK + utils.DELIMITER + utils.OK
+			server.isPrimary = true
+			out <- utils.ACKDEL + utils.OK
 		}
 	} else if request == utils.STATUS {
 		// Ping to check status?
-		out <- utils.ACK + utils.DELIMITER + utils.OK
+		out <- utils.ACKDEL + utils.OK
 	} else {
 		// Some invalid message not covered by our protocol.
-		fmt.Println("Invalid request " + request)
-		out <- utils.ERR + utils.DELIMITER + utils.INVALID
+		out <- utils.ERRDEL + utils.UNKNOWN
+		return errors.New("Unrecognized request: " + request)
 	}
+	return nil
 }
 
-func (server *Server) handleOtherPing(out chan<- string, request string) {
+func (server *Server) handlePeerMessage(out chan<- string, message string) error {
+	var err error
+	if server.isPrimary {
+		err = server.handleBackupResponse(out, message)
+	} else {
+		err = server.handlePrimaryRequest(out, message)
+	}
+	return err
+}
 
+func (server *Server) handleBackupResponse(out chan<- string, message string) error {
+	// We check if our last transaction went through; if there was a mistake we can retransmit it.
+	return nil
+}
+
+func (server *Server) handlePrimaryRequest(out chan<- string, message string) error {
+	// Messages have the format 'HEADER:REQUEST'
+	arr := strings.Split(message, utils.DELIMITER)
+	if len(arr) < 2 {
+		out <- utils.ERRDEL + utils.INVALID
+		return errors.New("Invalid message: " + message)
+	}
+	fmt.Println("peer message:", message)
+
+	header, request := arr[0], arr[1]
+	if header != utils.SYN {
+		out <- utils.ERRDEL + utils.INVALID
+		return errors.New("Unrecognized header:" + header)
+	}
+	if !strings.Contains(request, utils.DIFF) {
+		// Only handle DIFFs for now.
+		out <- utils.ERRDEL + utils.UNKNOWN
+		return errors.New("Unrecognized request:" + request)
+	}
+	arr = strings.Split(request, "=")
+	if len(arr) < 2 {
+		out <- utils.ERRDEL + utils.INVALID
+		return errors.New("Invalid message:" + request)
+	}
+	fmt.Println(server.store.Execute(arr[1]))
+	return nil
 }
