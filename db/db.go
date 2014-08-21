@@ -94,10 +94,6 @@ func (store *Store) readFromFile(filename string) {
 }
 
 func (store *Store) Execute(request string) string {
-	return store.dispatch(request)
-}
-
-func (store *Store) dispatch(request string) string {
 	if request == "" {
 		return request
 	}
@@ -110,7 +106,7 @@ func (store *Store) dispatch(request string) string {
 		return "ERR no such function"
 	}
 	// Keep a log of every passed transaction, and call the function.
-	store.logRecord(request)
+	// store.logRecord(request)
 	return exec(args[1:], store)
 }
 
