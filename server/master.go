@@ -180,22 +180,21 @@ func (master *Master) promoteBackup() bool {
 	if err != nil {
 		fmt.Println("Ping failed!")
 		return false
-	} else {
-		if message == utils.OK {
-			// Assign primary to backup.
-			fmt.Println("Promotion success")
-			master.primary = master.backup
-			master.backup = nil
-
-			// Wait for backup to come online.
-
-			// Create new channels for server.
-			master.serverIn = utils.InChanFromConn(master.primary, "primary")
-			return true
-		}
-		fmt.Println("Server denied request")
-		return false
 	}
+	if message == utils.OK {
+		// Assign primary to backup.
+		fmt.Println("Promotion success")
+		master.primary = master.backup
+		master.backup = nil
+
+		// Wait for backup to come online.
+
+		// Create new channels for server.
+		master.serverIn = utils.InChanFromConn(master.primary, "primary")
+		return true
+	}
+	fmt.Println("Server denied request")
+	return false
 }
 
 // Client session: gets input from client and sends it to a channel to the master.

@@ -56,10 +56,23 @@ func NewStore() *Store {
 		logs:        make([]Record, 0, INITIAL_LOG_CAPACITY),
 		lock:        sync.Mutex{}}
 	// Try to read a database dump if one exists.
-	file, err := os.Open("dump")
-	if err != nil {
-		fmt.Println("No existing database found.")
-	} else {
+	store.readFromFile("dump")
+	return store
+}
+
+func NewRecord(r string) *Record {
+	return &Record{request: r, timestamp: time.Now()}
+}
+
+func (store *Store) Flush() {
+	// Flush all data to disk.
+	store.writeLogs()
+	store.writeDump()
+}
+
+func (store *Store) readFromFile(filename string) {
+	file, err := os.Open(filename)
+	if err == nil {
 		// Use a Scanner to get each line of the dump.
 		scanner := bufio.NewScanner(file)
 		for scanner.Scan() {
@@ -78,17 +91,6 @@ func NewStore() *Store {
 			store.stringStore[key] = val
 		}
 	}
-	return store
-}
-
-func NewRecord(r string) *Record {
-	return &Record{request: r, timestamp: time.Now()}
-}
-
-func (store *Store) Flush() {
-	// Flush all data to disk.
-	store.writeLogs()
-	store.writeDump()
 }
 
 func (store *Store) Execute(request string) string {
@@ -152,8 +154,6 @@ func (store *Store) writeDump() {
 
 func getValue(args []string, store *Store) string {
 	// Get mutex lock and ensure release.
-	store.lock.Lock()
-	defer store.lock.Unlock()
 	if len(args) != 1 {
 		return "wrong number of arguments for \"GET\", expected 1"
 	}
@@ -168,8 +168,6 @@ func getValue(args []string, store *Store) string {
 
 func setValue(args []string, store *Store) string {
 	// Get mutex lock and ensure release.
-	store.lock.Lock()
-	defer store.lock.Unlock()
 	if len(args) != 2 {
 		return "wrong number of arguments for \"SET\", expected 2"
 	}
@@ -183,8 +181,6 @@ func setValue(args []string, store *Store) string {
 
 func incr(args []string, store *Store) string {
 	// Get mutex lock and ensure release.
-	store.lock.Lock()
-	defer store.lock.Unlock()
 	if len(args) != 1 {
 		return "wrong number of arguments for \"INCR\", expected 1"
 	}
@@ -212,8 +208,6 @@ func incr(args []string, store *Store) string {
 
 func incrby(args []string, store *Store) string {
 	// Get mutex lock and ensure release.
-	store.lock.Lock()
-	defer store.lock.Unlock()
 	if len(args) != 2 {
 		return "wrong number of arguments for \"INCRBY\", expected 2"
 	}
@@ -247,8 +241,6 @@ func incrby(args []string, store *Store) string {
 
 func decr(args []string, store *Store) string {
 	// Get mutex lock and ensure release.
-	store.lock.Lock()
-	defer store.lock.Unlock()
 	if len(args) != 1 {
 		return "wrong number of arguments for \"DECR\", expected 1"
 	}
@@ -276,8 +268,6 @@ func decr(args []string, store *Store) string {
 
 func del(args []string, store *Store) string {
 	// Get mutex lock and ensure release.
-	store.lock.Lock()
-	defer store.lock.Unlock()
 	if len(args) != 1 {
 		return "wrong number of arguments for \"DEL\", expected 1"
 	}
@@ -289,8 +279,6 @@ func del(args []string, store *Store) string {
 
 func rpush(args []string, store *Store) string {
 	// Get mutex lock and ensure release.
-	store.lock.Lock()
-	defer store.lock.Unlock()
 	if len(args) != 2 {
 		return "wrong number of arguments for \"RPUSH\", expected 2"
 	}
@@ -311,8 +299,6 @@ func rpush(args []string, store *Store) string {
 
 func rpop(args []string, store *Store) string {
 	// Get mutex lock and ensure release.
-	store.lock.Lock()
-	defer store.lock.Unlock()
 	if len(args) != 1 {
 		return "wrong number of arguments for \"RPOP\", expected 1"
 	}
@@ -337,8 +323,6 @@ func rpop(args []string, store *Store) string {
 
 func llen(args []string, store *Store) string {
 	// Get mutex lock and ensure release.
-	store.lock.Lock()
-	defer store.lock.Unlock()
 	if len(args) != 1 {
 		return "wrong number of arguments for \"RPOP\", expected 1"
 	}
@@ -356,8 +340,6 @@ func llen(args []string, store *Store) string {
 
 func lrange(args []string, store *Store) string {
 	// Get mutex lock and ensure release.
-	store.lock.Lock()
-	defer store.lock.Unlock()
 	if len(args) != 3 {
 		return "wrong number of arguments for \"LRANGE\", expected 3"
 	}
