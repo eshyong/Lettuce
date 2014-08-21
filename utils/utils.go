@@ -18,22 +18,30 @@ const (
 	ACK    = "ACK"
 	SYN    = "SYN"
 	ERR    = "ERR"
-	CLIENT = "CLIENT"
+	CLIENT = "CLI"
+
+	// For convenience.
+	ACKDEL = ACK + DELIMITER
+	SYNDEL = SYN + DELIMITER
+	ERRDEL = ERR + DELIMITER
+	CLIDEL = CLIENT + DELIMITER
 
 	// Message delimiter.
 	DELIMITER = ":"
 
 	// Requests.
-	PROMOTE = "PROMOTE"
-	PRIMARY = "PRIMARY"
-	BACKUP  = "BACKUP"
-	STATUS  = "STATUS"
+	PROMOTE = "PROM"
+	PRIMARY = "PRIM"
+	BACKUP  = "BACK"
+	STATUS  = "STAT"
+	DIFF    = "DIFF"
 
 	// Status codes.
 	OK      = "OK"
 	NEG     = "NEG"
-	INVALID = "INVALID"
-	CLOSED  = "CLOSED"
+	INVALID = "INVLD"
+	UNKNOWN = "UNKN"
+	CLOSED  = "CLOS"
 
 	// For testing.
 	LOCALHOST = "127.0.0.1"

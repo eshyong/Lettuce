@@ -53,6 +53,7 @@ func (master *Master) WaitForConnections() {
 
 			if message != utils.OK {
 				fmt.Println("Request rejected.")
+				continue
 			}
 			fmt.Println("Primary is running!")
 			master.primary = conn
@@ -75,7 +76,7 @@ func (master *Master) WaitForConnections() {
 func pingServer(server net.Conn, request string) (string, error) {
 	// SYN
 	fmt.Println("Sending SYN...")
-	n, err := fmt.Fprintln(server, utils.SYN+utils.DELIMITER+request)
+	n, err := fmt.Fprintln(server, utils.SYNDEL+request)
 	if n == 0 || err != nil {
 		return "", errors.New("SYN failed!")
 	}
@@ -121,10 +122,14 @@ func (master *Master) Serve() {
 		fmt.Println("client connected on address", conn.LocalAddr())
 
 		// Create a new session ID, and add the session to our multiplexer set.
-		id := "session" + strconv.FormatUint(master.counter, 10)
+		id := utils.CLIENT + strconv.FormatUint(master.counter, 10)
 		master.sessions[id] = session(conn, mux, id)
 		master.counter += 1
 	}
+}
+
+func (master *Master) pingServers() {
+
 }
 
 // Creates a multiplexer for all client sessions to write to. Dispatches to the primary
@@ -137,39 +142,49 @@ func (master *Master) funnelRequests() chan<- string {
 		for {
 			select {
 			case request, _ := <-multiplexer:
-				// Send any sessions request to the server.
-				arr := strings.Split(request, utils.DELIMITER)
-				if len(arr) < 2 {
-					fmt.Println("Invalid request", arr)
-					break
-				}
-				sender, body := arr[0], arr[1]
-				if body == utils.CLOSED {
-					// One of our client connections closed, delete the mapped value.
-					delete(master.sessions, sender)
-				} else {
-					master.serverOut <- request
-				}
+				master.handleClientRequest(request)
 			case reply, ok := <-master.serverIn:
 				// Get a server reply, and determine which session to send to.
 				if !ok {
 					break loop
 				}
-				arr := strings.Split(reply, utils.DELIMITER)
-				if len(arr) < 2 {
-					fmt.Println("Invalid reply", arr)
-					break
-				}
-				// clientID:reply -> "send reply to session#NUM"
-				recipient := arr[0]
-				body := arr[1]
-				if channel, in := master.sessions[recipient]; in {
-					channel <- body
-				}
+				master.sendToClient(reply)
 			}
 		}
 	}()
 	return multiplexer
+}
+
+// Send any sessions request to the server.
+func (master *Master) handleClientRequest(request string) {
+	arr := strings.Split(request, utils.DELIMITER)
+	if len(arr) < 2 {
+		fmt.Println("Invalid request", arr)
+		return
+	}
+	sender, body := arr[0], arr[1]
+	if body == utils.CLOSED {
+		// One of our client connections closed, delete the mapped value.
+		delete(master.sessions, sender)
+	} else {
+		// Otherwise send it out to the server.
+		master.serverOut <- request
+	}
+}
+
+func (master *Master) sendToClient(reply string) {
+	// Check if message is in a valid format.
+	arr := strings.Split(reply, utils.DELIMITER)
+	if len(arr) < 2 {
+		fmt.Println("Invalid reply", arr)
+		return
+	}
+	// clientID:reply -> "send reply to CLIENT#"
+	recipient := arr[0]
+	body := arr[1]
+	if channel, in := master.sessions[recipient]; in {
+		channel <- body
+	}
 }
 
 func (master *Master) promoteBackup() bool {
@@ -219,6 +234,7 @@ func session(client net.Conn, mux chan<- string, id string) chan<- string {
 				}
 				// Request format "ID:request".
 				request = id + utils.DELIMITER + request
+				fmt.Println("request:", request)
 				mux <- request
 			case reply, ok := <-session:
 				if !ok {
