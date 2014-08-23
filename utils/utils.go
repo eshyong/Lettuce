@@ -14,7 +14,7 @@ const (
 	CLI_CLIENT_PORT = "8000"
 	DEADLINE        = time.Second * 5
 	TIMEOUT         = time.Second * 5
-	WAIT_PERIOD     = time.Second * 2
+	WAIT_PERIOD     = time.Second * 15
 	SERVER_PORT     = "8080"
 
 	// Protocol headers.
@@ -56,7 +56,7 @@ func InChanFromConn(conn net.Conn, name string) <-chan string {
 		defer close(in)
 		scanner := bufio.NewScanner(conn)
 		for scanner.Scan() {
-			fmt.Println("Reading!", scanner.Text())
+			//			fmt.Println("Reading!", scanner.Text())
 			in <- scanner.Text()
 		}
 		if err := scanner.Err(); err != nil {
@@ -77,7 +77,7 @@ func OutChanFromConn(conn net.Conn, name string) chan<- string {
 			}
 
 			// Use Fprintln because bufio.WriteString buffers.
-			fmt.Println("Writing!", reply)
+			//			fmt.Println("Writing!", reply)
 			n, err := fmt.Fprintln(conn, reply)
 			if n == 0 {
 				break
