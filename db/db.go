@@ -149,7 +149,6 @@ func (store *Store) writeDump() {
 }
 
 func getValue(args []string, store *Store) string {
-	// Get mutex lock and ensure release.
 	if len(args) != 1 {
 		return "wrong number of arguments for \"GET\", expected 1"
 	}
@@ -163,7 +162,6 @@ func getValue(args []string, store *Store) string {
 }
 
 func setValue(args []string, store *Store) string {
-	// Get mutex lock and ensure release.
 	if len(args) != 2 {
 		return "wrong number of arguments for \"SET\", expected 2"
 	}
@@ -176,7 +174,6 @@ func setValue(args []string, store *Store) string {
 }
 
 func incr(args []string, store *Store) string {
-	// Get mutex lock and ensure release.
 	if len(args) != 1 {
 		return "wrong number of arguments for \"INCR\", expected 1"
 	}
@@ -203,7 +200,6 @@ func incr(args []string, store *Store) string {
 }
 
 func incrby(args []string, store *Store) string {
-	// Get mutex lock and ensure release.
 	if len(args) != 2 {
 		return "wrong number of arguments for \"INCRBY\", expected 2"
 	}
@@ -236,7 +232,6 @@ func incrby(args []string, store *Store) string {
 }
 
 func decr(args []string, store *Store) string {
-	// Get mutex lock and ensure release.
 	if len(args) != 1 {
 		return "wrong number of arguments for \"DECR\", expected 1"
 	}
@@ -263,7 +258,6 @@ func decr(args []string, store *Store) string {
 }
 
 func del(args []string, store *Store) string {
-	// Get mutex lock and ensure release.
 	if len(args) != 1 {
 		return "wrong number of arguments for \"DEL\", expected 1"
 	}
@@ -274,7 +268,6 @@ func del(args []string, store *Store) string {
 }
 
 func rpush(args []string, store *Store) string {
-	// Get mutex lock and ensure release.
 	if len(args) != 2 {
 		return "wrong number of arguments for \"RPUSH\", expected 2"
 	}
@@ -294,7 +287,6 @@ func rpush(args []string, store *Store) string {
 }
 
 func rpop(args []string, store *Store) string {
-	// Get mutex lock and ensure release.
 	if len(args) != 1 {
 		return "wrong number of arguments for \"RPOP\", expected 1"
 	}
@@ -318,7 +310,6 @@ func rpop(args []string, store *Store) string {
 }
 
 func llen(args []string, store *Store) string {
-	// Get mutex lock and ensure release.
 	if len(args) != 1 {
 		return "wrong number of arguments for \"RPOP\", expected 1"
 	}
@@ -335,7 +326,6 @@ func llen(args []string, store *Store) string {
 }
 
 func lrange(args []string, store *Store) string {
-	// Get mutex lock and ensure release.
 	if len(args) != 3 {
 		return "wrong number of arguments for \"LRANGE\", expected 3"
 	}
