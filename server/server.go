@@ -143,6 +143,7 @@ func (server *Server) handleMasterPing(out chan<- string, request string) error 
 		}
 	} else if request == utils.STATUS {
 		// Ping to check status?
+		fmt.Println("Request for status.")
 		out <- utils.ACKDEL + utils.OK
 	} else {
 		// Some invalid message not covered by our protocol.

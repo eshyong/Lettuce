@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"log"
@@ -14,17 +13,17 @@ import (
 )
 
 type Master struct {
-	// DB servers that master manages.
-	primary       net.Conn
-	backup        net.Conn
-	primaryIn     <-chan string
-	primaryOut    chan<- string
-	backupIn      <-chan string
-	backupOut     chan<- string
-	sessions      map[string]chan<- string
-	counter       uint64
-	pingedPrimary bool
-	pingedBackup  bool
+	primary  net.Conn
+	backup   net.Conn
+	sessions map[string]chan<- string
+
+	primaryIn  <-chan string
+	primaryOut chan<- string
+
+	backupIn  <-chan string
+	backupOut chan<- string
+
+	counter uint64
 }
 
 func NewMaster() *Master {
@@ -32,8 +31,7 @@ func NewMaster() *Master {
 		sessions:  make(map[string]chan<- string),
 		primaryIn: nil, primaryOut: nil,
 		backupIn: nil, backupOut: nil,
-		counter:       0,
-		pingedPrimary: false, pingedBackup: false}
+		counter: 0}
 }
 
 // This is run if no servers are discovered on startup. Alternates between polling and sleeping.
@@ -51,67 +49,93 @@ func (master *Master) WaitForConnections() {
 		if err != nil {
 			log.Fatal("Unable to connect: ", err)
 		}
-		master.checkServer(conn, true)
+
+		// Ping the server to check if it's ok.
+		in := utils.InChanFromConn(conn, "primary")
+		out := utils.OutChanFromConn(conn, "primary")
+		err = pingServer(in, out, true)
+
+		if err != nil {
+			fmt.Println(err)
+			continue
+		}
+
+		// Add backup variables to our master.
+		master.primary = conn
+		master.primaryIn = in
+		master.primaryOut = out
+		if err != nil {
+			fmt.Println(err)
+			continue
+		}
+		fmt.Println("Primary is running!")
 	}
 	for master.backup == nil {
 		conn, err := listener.Accept()
 		if err != nil {
 			log.Fatal("Unable to connect: ", err)
 		}
-		master.checkServer(conn, false)
+
+		// Ping the server to check if it's ok.
+		in := utils.InChanFromConn(conn, "backup")
+		out := utils.OutChanFromConn(conn, "backup")
+		err = pingServer(in, out, false)
+
+		if err != nil {
+			fmt.Println(err)
+			continue
+		}
+
+		// Add backup variables to our master.
+		master.backup = conn
+		master.backupIn = in
+		master.backupOut = out
+		fmt.Println("Backup is running!")
 	}
 }
 
-func (master *Master) checkServer(conn net.Conn, promote bool) (string, error) {
-	var retmsg, request string
-	if request = utils.STATUS; promote {
+func (master *Master) checkServers() {
+	fmt.Println("Checking server status...")
+	err := pingServer(master.primaryIn, master.primaryOut, false)
+	if err != nil {
+		// TODO: promote backup
+		log.Fatal("checkServers() failed: primary")
+	}
+	fmt.Println("Primary is fine! Pinging backup...")
+	err = pingServer(master.backupIn, master.backupOut, false)
+	if err != nil {
+		// TODO: Wait for backup
+		log.Fatal("checkServers() failed: backup")
+	}
+	fmt.Println("Backup is fine!")
+}
+
+// Check server's status by sending a short message.
+func pingServer(in <-chan string, out chan<- string, primary bool) error {
+	request := utils.STATUS
+	if primary {
 		request = utils.PROMOTE
 	}
 
 	// Send a STATUS message.
-	message, err := pingServer(conn, request)
-	if err != nil {
-		return "", err
+	out <- utils.SYNDEL + request
+	message, ok := <-in
+	if !ok {
+		return errors.New("Connection error")
 	}
 	fmt.Println("message:", message)
 
+	arr := strings.Split(message, utils.DELIMITER)
+	header, body := arr[0], arr[1]
+	if header != utils.ACK {
+		return errors.New("Invalid protocol")
+	}
+
 	// Hopefully receive an "OK" in response.
-	if message != utils.OK {
-		return "", errors.New("Request rejected.")
+	if body != utils.OK {
+		return errors.New("Request rejected.")
 	}
-	if promote {
-		retmsg = "Primary is running!"
-		master.primary = conn
-	} else {
-		retmsg = "Backup is running!"
-		master.backup = conn
-	}
-	return retmsg, nil
-}
-
-// Check server's status by sending a short message.
-func pingServer(server net.Conn, request string) (string, error) {
-	// SYN
-	fmt.Println("Sending SYN...")
-	n, err := fmt.Fprintln(server, utils.SYNDEL+request)
-	if n == 0 || err != nil {
-		return "", errors.New("SYN failed!")
-	}
-
-	// ACK
-	fmt.Println("Waiting for ACK...")
-	scanner := bufio.NewScanner(server)
-	scanner.Scan()
-	if err := scanner.Err(); err != nil {
-		return "", errors.New("No ACK received")
-	}
-
-	// Get message
-	message := strings.Split(scanner.Text(), utils.DELIMITER)
-	if len(message) < 2 || message[0] != utils.ACK {
-		return "", errors.New("Invalid message: " + scanner.Text())
-	}
-	return message[1], nil
+	return nil
 }
 
 // Serves any number of clients. TODO: load test.
@@ -123,9 +147,7 @@ func (master *Master) Serve() {
 	}
 	defer listener.Close()
 
-	// Create channels to listen on primary.
-	master.primaryIn = utils.InChanFromConn(master.primary, "primary")
-	master.primaryOut = utils.OutChanFromConn(master.primary, "primary")
+	// Create channels to listen on primary and backup.
 	master.backupIn = utils.InChanFromConn(master.backup, "backup")
 	master.backupOut = utils.OutChanFromConn(master.backup, "backup")
 	defer close(master.primaryOut)
@@ -147,24 +169,6 @@ func (master *Master) Serve() {
 	}
 }
 
-func (master *Master) pingServers() {
-	// Ping primary and make sure server is up.
-	fmt.Println("Pinging primary...")
-	message, err := pingServer(master.primary, utils.STATUS)
-	if err != nil || message != "OK" {
-		// Promote backup
-		log.Fatal("TODO: promote backup")
-	}
-	// Ping backup and make sure server is up.
-	fmt.Println("Pinging backup...")
-	message, err = pingServer(master.backup, utils.STATUS)
-	if err != nil || message != "OK" {
-		// Wait for backups to connect.
-		log.Fatal("TODO: wait for backups")
-	}
-	fmt.Println("All servers up.")
-}
-
 // Creates a multiplexer for all client sessions to write to. Dispatches to the primary
 // server, and determines which session channel to write back to.
 func (master *Master) funnelRequests() chan<- string {
@@ -172,7 +176,7 @@ func (master *Master) funnelRequests() chan<- string {
 	go func() {
 		defer close(multiplexer)
 		begin := time.Now()
-		//	loop:
+	loop:
 		for {
 			elapsed := time.Since(begin)
 			select {
@@ -181,47 +185,37 @@ func (master *Master) funnelRequests() chan<- string {
 			case reply, ok := <-master.primaryIn:
 				// Get a server reply, and determine which session to send to.
 				if !ok {
-					break
+					// Primary disconnected.
+					master.promoteBackup()
+					goto longsleep
 				}
+				fmt.Println("case reply, ok := <-master.primaryIn:", reply)
 				master.handlePrimaryIn(reply)
 			case reply, ok := <-master.backupIn:
 				// Get a ping from backup.
 				if !ok {
-					break
+					master.backup = nil
+					master.backupIn = nil
+					master.backupOut = nil
+					master.waitForBackup()
+					goto longsleep
 				}
+				fmt.Println("case reply, ok := <-master.backupIn:", reply)
 				master.handleBackupIn(reply)
 			default:
 				// Ping servers and make sure they're up.
-				master.handleDefault(elapsed, &begin)
+				if elapsed > utils.WAIT_PERIOD {
+					master.checkServers()
+					begin = time.Now()
+				}
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
+	longsleep:
+		time.Sleep(time.Second)
+		goto loop
 	}()
 	return multiplexer
-}
-
-func (master *Master) handleDefault(elapsed time.Duration, begin *time.Time) {
-	if (master.pingedPrimary || master.pingedBackup) && elapsed > utils.DEADLINE {
-		if master.pingedPrimary {
-			// Promote backup
-			//			master.promoteBackup()
-			return
-		}
-		if master.pingedBackup {
-			// Wait for other backups
-			return
-		}
-	}
-	if elapsed > utils.WAIT_PERIOD {
-		// Reset begin.
-		*begin = time.Now()
-
-		// Ping
-		master.primaryOut <- utils.SYNDEL + utils.STATUS
-		master.backupOut <- utils.SYNDEL + utils.STATUS
-		master.pingedPrimary = true
-		master.pingedBackup = true
-	}
 }
 
 // Send any sessions request to the server.
@@ -252,10 +246,6 @@ func (master *Master) handlePrimaryIn(reply string) {
 
 	header, body := arr[0], arr[1]
 	if header == utils.ACK {
-		if !master.pingedPrimary {
-			fmt.Println("Something interesting happened")
-			return
-		}
 		if body != utils.OK {
 			fmt.Println("Something wrong with the primary")
 			// TODO: figure this out.
@@ -263,7 +253,6 @@ func (master *Master) handlePrimaryIn(reply string) {
 		}
 		// Everything is fine.
 		fmt.Println("Primary is fine.")
-		master.pingedPrimary = false
 	} else if strings.Contains(header, utils.CLIENT) {
 		// clientID:reply -> "send reply to CLIENT#"
 		if channel, in := master.sessions[header]; in {
@@ -294,47 +283,56 @@ func (master *Master) handleBackupIn(reply string) {
 	}
 	// Everything is fine.
 	fmt.Println("Backup is fine.")
-	master.pingedBackup = false
 }
 
-func (master *Master) promoteBackup() bool {
-	if master.backup == nil {
-		master.WaitForConnections()
+func (master *Master) promoteBackup() {
+	// Completely borked.
+	if master.backupOut == nil || master.backupIn == nil {
+		log.Fatal("No backup available, exiting...")
 	}
-	message, err := pingServer(master.backup, utils.PRIMARY)
+
+	// Send a message and wait for a response.
+	fmt.Println("Promoting backup...")
+	err := pingServer(master.backupIn, master.backupOut, true)
 	if err != nil {
-		fmt.Println("Ping failed!")
-		return false
+		log.Fatal(err)
 	}
-	if message == utils.OK {
-		// Assign primary to backup.
-		fmt.Println("Promotion success")
-		master.primary = master.backup
-		master.backup = nil
 
-		// Wait for backup to come online.
-		//		master.waitForBackup()
+	// Switch everything primary to backup.
+	fmt.Println("Promotion success!")
+	master.primary = master.backup
+	master.primaryIn = master.backupIn
+	master.primaryOut = master.backupOut
 
-		// Create new channels for server.
-		master.primaryIn = utils.InChanFromConn(master.primary, "primary")
-		return true
-	}
-	fmt.Println("Server denied request")
-	return false
+	// Remove backup variables.
+	master.backup = nil
+	master.backupIn = nil
+	master.backupOut = nil
+
+	// Wait for backup to come online.
+	master.waitForBackup()
 }
 
 func (master *Master) waitForBackup() {
+	fmt.Println("Waiting for backups...")
 	listener, err := net.Listen("tcp", utils.DELIMITER+utils.SERVER_PORT)
 	if err != nil {
 		log.Fatal("Unable to get a socket: ", err)
 	}
+	defer listener.Close()
+
+	// Wait for a backup server to connect.
 	for master.backup == nil {
+		fmt.Println("Accepting...")
 		conn, err := listener.Accept()
 		if err != nil {
 			fmt.Println("Error connecting to backup:", err)
 		}
-		// Ping backup somehow and also shut off backup channel?
+
+		fmt.Println("Backup is up!")
 		master.backup = conn
+		master.backupIn = utils.InChanFromConn(master.backup, "backup")
+		master.backupOut = utils.OutChanFromConn(master.backup, "backup")
 	}
 }
 
