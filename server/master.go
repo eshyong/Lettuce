@@ -188,16 +188,6 @@ func (master *Master) funnelRequests() chan<- string {
 					goto longsleep
 				}
 				master.handlePrimaryIn(reply)
-			case reply, ok := <-master.backupIn:
-				// Get a ping from backup.
-				if !ok {
-					master.backup = nil
-					master.backupIn = nil
-					master.backupOut = nil
-					go master.waitForBackup()
-					goto longsleep
-				}
-				master.handleBackupIn(reply)
 			default:
 				// Ping servers and make sure they're up.
 				if elapsed > utils.WAIT_PERIOD {
@@ -241,15 +231,7 @@ func (master *Master) handlePrimaryIn(reply string) {
 	}
 
 	header, body := arr[0], arr[1]
-	if header == utils.ACK {
-		if body != utils.OK {
-			fmt.Println("Something wrong with the primary")
-			// TODO: figure this out.
-			return
-		}
-		// Everything is fine.
-		fmt.Println("Primary is fine.")
-	} else if strings.Contains(header, utils.CLIENT) {
+	if strings.Contains(header, utils.CLIENT) {
 		// clientID:reply -> "send reply to CLIENT#"
 		if channel, in := master.sessions[header]; in {
 			channel <- body
@@ -260,31 +242,16 @@ func (master *Master) handlePrimaryIn(reply string) {
 	}
 }
 
-func (master *Master) handleBackupIn(reply string) {
-	// Check if message is in a valid format.
-	arr := strings.Split(reply, utils.DELIMITER)
-	if len(arr) < 2 {
-		fmt.Println("Invalid reply", arr)
-		return
-	}
-	header, body := arr[0], arr[1]
-	if header != utils.ACK {
-		fmt.Println("Unknown protocol message:", reply)
-		master.primaryOut <- utils.ERRDEL + utils.UNKNOWN
-	}
-	if body != utils.OK {
-		fmt.Println("Something wrong with the backup")
-		// TODO: figure this out.
-		return
-	}
-	// Everything is fine.
-	fmt.Println("Backup is fine.")
-}
-
 func (master *Master) promoteBackup() {
+	// Clean up old references.
+	master.primary = nil
+	master.primaryIn = nil
+	master.primaryOut = nil
+
 	// Completely borked.
 	if master.backup == nil {
-		log.Fatal("No backup available, exiting...")
+		master.WaitForConnections()
+		return
 	}
 
 	// Send a message and wait for a response.
@@ -300,16 +267,16 @@ func (master *Master) promoteBackup() {
 	master.primaryIn = master.backupIn
 	master.primaryOut = master.backupOut
 
-	// Remove backup variables.
-	master.backup = nil
-	master.backupIn = nil
-	master.backupOut = nil
-
 	// Wait for backup to come online.
 	go master.waitForBackup()
 }
 
 func (master *Master) waitForBackup() {
+	// Clean up old references.
+	master.backup = nil
+	master.backupIn = nil
+	master.backupOut = nil
+
 	fmt.Println("Waiting for backups...")
 	listener, err := net.Listen("tcp", utils.DELIMITER+utils.SERVER_PORT)
 	if err != nil {
