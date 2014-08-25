@@ -148,8 +148,6 @@ func (master *Master) Serve() {
 	defer listener.Close()
 
 	// Create channels to listen on primary and backup.
-	master.backupIn = utils.InChanFromConn(master.backup, "backup")
-	master.backupOut = utils.OutChanFromConn(master.backup, "backup")
 	defer close(master.primaryOut)
 
 	// Funnel requests into a multiplexer.
@@ -189,7 +187,6 @@ func (master *Master) funnelRequests() chan<- string {
 					master.promoteBackup()
 					goto longsleep
 				}
-				fmt.Println("case reply, ok := <-master.primaryIn:", reply)
 				master.handlePrimaryIn(reply)
 			case reply, ok := <-master.backupIn:
 				// Get a ping from backup.
@@ -197,10 +194,9 @@ func (master *Master) funnelRequests() chan<- string {
 					master.backup = nil
 					master.backupIn = nil
 					master.backupOut = nil
-					master.waitForBackup()
+					go master.waitForBackup()
 					goto longsleep
 				}
-				fmt.Println("case reply, ok := <-master.backupIn:", reply)
 				master.handleBackupIn(reply)
 			default:
 				// Ping servers and make sure they're up.
@@ -287,7 +283,7 @@ func (master *Master) handleBackupIn(reply string) {
 
 func (master *Master) promoteBackup() {
 	// Completely borked.
-	if master.backupOut == nil || master.backupIn == nil {
+	if master.backup == nil {
 		log.Fatal("No backup available, exiting...")
 	}
 
@@ -310,7 +306,7 @@ func (master *Master) promoteBackup() {
 	master.backupOut = nil
 
 	// Wait for backup to come online.
-	master.waitForBackup()
+	go master.waitForBackup()
 }
 
 func (master *Master) waitForBackup() {
@@ -323,7 +319,6 @@ func (master *Master) waitForBackup() {
 
 	// Wait for a backup server to connect.
 	for master.backup == nil {
-		fmt.Println("Accepting...")
 		conn, err := listener.Accept()
 		if err != nil {
 			fmt.Println("Error connecting to backup:", err)
