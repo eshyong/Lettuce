@@ -62,7 +62,7 @@ func InChanFromConn(conn net.Conn, name string) <-chan string {
 		if err := scanner.Err(); err != nil {
 			fmt.Println(name, err)
 		}
-		fmt.Println(name, " disconnected at ", conn.RemoteAddr())
+		fmt.Println(name + " disconnected at " + conn.RemoteAddr().String())
 	}()
 	return in
 }
@@ -86,7 +86,6 @@ func OutChanFromConn(conn net.Conn, name string) chan<- string {
 				fmt.Println(err)
 			}
 		}
-		fmt.Println(name, "disconnected at", conn.RemoteAddr())
 	}()
 	return out
 }

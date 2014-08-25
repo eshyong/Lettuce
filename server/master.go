@@ -102,7 +102,6 @@ func pingServer(server net.Conn, request string) (string, error) {
 	fmt.Println("Waiting for ACK...")
 	scanner := bufio.NewScanner(server)
 	scanner.Scan()
-	fmt.Println("scanner.Text():", scanner.Text())
 	if err := scanner.Err(); err != nil {
 		return "", errors.New("No ACK received")
 	}
@@ -173,7 +172,7 @@ func (master *Master) funnelRequests() chan<- string {
 	go func() {
 		defer close(multiplexer)
 		begin := time.Now()
-	loop:
+		//	loop:
 		for {
 			elapsed := time.Since(begin)
 			select {
@@ -182,40 +181,47 @@ func (master *Master) funnelRequests() chan<- string {
 			case reply, ok := <-master.primaryIn:
 				// Get a server reply, and determine which session to send to.
 				if !ok {
-					break loop
+					break
 				}
 				master.handlePrimaryIn(reply)
 			case reply, ok := <-master.backupIn:
 				// Get a ping from backup.
 				if !ok {
-					break loop
+					break
 				}
 				master.handleBackupIn(reply)
 			default:
 				// Ping servers and make sure they're up.
-				if (master.pingedPrimary || master.pingedBackup) && elapsed > utils.DEADLINE {
-					if master.pingedPrimary {
-						// Promote backup
-						continue
-					}
-					if master.pingedBackup {
-						// Wait for other backups
-						continue
-					}
-				}
-				if elapsed > utils.WAIT_PERIOD {
-					// Reset begin.
-					begin = time.Now()
-
-					master.primaryOut <- utils.SYNDEL + utils.STATUS
-					master.backupOut <- utils.SYNDEL + utils.STATUS
-					master.pingedPrimary = true
-					master.pingedBackup = true
-				}
+				master.handleDefault(elapsed, &begin)
 			}
+			time.Sleep(50 * time.Millisecond)
 		}
 	}()
 	return multiplexer
+}
+
+func (master *Master) handleDefault(elapsed time.Duration, begin *time.Time) {
+	if (master.pingedPrimary || master.pingedBackup) && elapsed > utils.DEADLINE {
+		if master.pingedPrimary {
+			// Promote backup
+			//			master.promoteBackup()
+			return
+		}
+		if master.pingedBackup {
+			// Wait for other backups
+			return
+		}
+	}
+	if elapsed > utils.WAIT_PERIOD {
+		// Reset begin.
+		*begin = time.Now()
+
+		// Ping
+		master.primaryOut <- utils.SYNDEL + utils.STATUS
+		master.backupOut <- utils.SYNDEL + utils.STATUS
+		master.pingedPrimary = true
+		master.pingedBackup = true
+	}
 }
 
 // Send any sessions request to the server.
@@ -307,6 +313,7 @@ func (master *Master) promoteBackup() bool {
 		master.backup = nil
 
 		// Wait for backup to come online.
+		//		master.waitForBackup()
 
 		// Create new channels for server.
 		master.primaryIn = utils.InChanFromConn(master.primary, "primary")
@@ -314,6 +321,21 @@ func (master *Master) promoteBackup() bool {
 	}
 	fmt.Println("Server denied request")
 	return false
+}
+
+func (master *Master) waitForBackup() {
+	listener, err := net.Listen("tcp", utils.DELIMITER+utils.SERVER_PORT)
+	if err != nil {
+		log.Fatal("Unable to get a socket: ", err)
+	}
+	for master.backup == nil {
+		conn, err := listener.Accept()
+		if err != nil {
+			fmt.Println("Error connecting to backup:", err)
+		}
+		// Ping backup somehow and also shut off backup channel?
+		master.backup = conn
+	}
 }
 
 // Client session: gets input from client and sends it to a channel to the master.
@@ -349,7 +371,6 @@ func session(client net.Conn, mux chan<- string, id string) chan<- string {
 			}
 		}
 		mux <- id + utils.DELIMITER + utils.CLOSED
-		fmt.Printf("Client at %v disconnected\n", client.LocalAddr())
 	}()
 	return session
 }
