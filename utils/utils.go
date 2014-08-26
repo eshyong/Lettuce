@@ -16,6 +16,7 @@ const (
 	TIMEOUT         = time.Second * 5
 	WAIT_PERIOD     = time.Second * 15
 	SERVER_PORT     = "8080"
+	PEER_PORT       = "9000"
 
 	// Protocol headers.
 	ACK    = "ACK"
@@ -29,8 +30,9 @@ const (
 	ERRDEL = ERR + DELIMITER
 	CLIDEL = CLIENT + DELIMITER
 
-	// Message delimiter.
+	// Message delimiters.
 	DELIMITER = ":"
+	EQUALS    = "="
 
 	// Requests.
 	PROMOTE = "PROM"

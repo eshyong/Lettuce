@@ -91,6 +91,8 @@ func (master *Master) WaitForConnections() {
 		master.backupIn = in
 		master.backupOut = out
 		fmt.Println("Backup is running!")
+
+		master.backupOut <- utils.SYNDEL + utils.PRIMARY + utils.EQUALS + master.primary.RemoteAddr().String()
 	}
 }
 
@@ -289,12 +291,22 @@ func (master *Master) waitForBackup() {
 		conn, err := listener.Accept()
 		if err != nil {
 			fmt.Println("Error connecting to backup:", err)
+			continue
+		}
+
+		in := utils.InChanFromConn(conn, "backup")
+		out := utils.OutChanFromConn(conn, "backup")
+
+		err = pingServer(in, out, false)
+		if err != nil {
+			fmt.Println(err)
+			continue
 		}
 
 		fmt.Println("Backup is up!")
 		master.backup = conn
-		master.backupIn = utils.InChanFromConn(master.backup, "backup")
-		master.backupOut = utils.OutChanFromConn(master.backup, "backup")
+		master.backupIn = in
+		master.backupOut = out
 	}
 }
 
