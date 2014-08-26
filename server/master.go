@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -98,17 +99,22 @@ func (master *Master) WaitForConnections() {
 
 func (master *Master) checkServers() {
 	fmt.Println("Checking server status...")
+	master.primary.SetDeadline(time.Now().Add(utils.DEADLINE))
 	err := pingServer(master.primaryIn, master.primaryOut, false)
 	if err != nil {
 		// TODO: promote backup
 		log.Fatal("checkServers() failed: primary")
 	}
+	master.primary.SetDeadline(utils.NO_DEADLINE)
 	fmt.Println("Primary is fine! Pinging backup...")
+
+	master.backup.SetDeadline(time.Now().Add(utils.DEADLINE))
 	err = pingServer(master.backupIn, master.backupOut, false)
 	if err != nil {
 		// TODO: Wait for backup
 		log.Fatal("checkServers() failed: backup")
 	}
+	master.backup.SetDeadline(utils.NO_DEADLINE)
 	fmt.Println("Backup is fine!")
 }
 
@@ -218,6 +224,9 @@ func (master *Master) handleClientRequest(request string) {
 	if body == utils.CLOSED {
 		// One of our client connections closed, delete the mapped value.
 		delete(master.sessions, sender)
+	} else if strings.ToUpper(body) == utils.SHUTDOWN {
+		// Client has requested that we shutdown the server.
+		master.shutdown()
 	} else {
 		// Otherwise send it out to the server.
 		master.primaryOut <- request
@@ -303,6 +312,8 @@ func (master *Master) waitForBackup() {
 			continue
 		}
 
+		master.backupOut <- utils.SYNDEL + utils.PRIMARY + utils.EQUALS + master.primary.RemoteAddr().String()
+
 		fmt.Println("Backup is up!")
 		master.backup = conn
 		master.backupIn = in
@@ -345,4 +356,14 @@ func session(client net.Conn, mux chan<- string, id string) chan<- string {
 		mux <- id + utils.DELIMITER + utils.CLOSED
 	}()
 	return session
+}
+
+func (master *Master) shutdown() {
+	// Close sockets and exit.
+	fmt.Println("Shutting down gracefully...")
+	master.primary.Close()
+	master.backup.Close()
+
+	fmt.Println("Lettuce meat again.")
+	os.Exit(0)
 }

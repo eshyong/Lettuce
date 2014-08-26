@@ -154,6 +154,7 @@ loop:
 			server.peerOut <- utils.SYNDEL + utils.DIFF + utils.EQUALS + request
 		}
 	}
+	fmt.Println("Shutting down...")
 }
 
 func (server *Server) handleMasterRequests(out chan<- string, message string) error {

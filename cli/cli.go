@@ -35,11 +35,12 @@ func (cli *Cli) Run() {
 
 	// Prompt user.
 	fmt.Print("> ")
+loop:
 	for {
 		select {
 		case message, ok := <-serverIn:
 			if !ok {
-				return
+				break loop
 			}
 			if message != "" {
 				fmt.Println(message)
@@ -47,11 +48,12 @@ func (cli *Cli) Run() {
 			fmt.Print("> ")
 		case input, ok := <-userIn:
 			if !ok {
-				return
+				break loop
 			}
 			serverOut <- input
 		}
 	}
+	fmt.Println("Goodbye!")
 }
 
 func (cli *Cli) getInput() chan string {

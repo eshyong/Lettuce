@@ -48,6 +48,9 @@ const (
 	UNKNOWN = "UNKN"
 	CLOSED  = "CLOS"
 
+	// Special user request for shutdown.
+	SHUTDOWN = "SHUTDOWN"
+
 	// For testing.
 	LOCALHOST = "127.0.0.1"
 )
