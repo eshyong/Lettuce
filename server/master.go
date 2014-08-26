@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 	"time"
@@ -179,6 +180,7 @@ func (master *Master) Serve() {
 // server, and determines which session channel to write back to.
 func (master *Master) funnelRequests() chan<- string {
 	multiplexer := make(chan string)
+	signaler := master.handleSignals()
 	go func() {
 		defer close(multiplexer)
 		begin := time.Now()
@@ -186,7 +188,7 @@ func (master *Master) funnelRequests() chan<- string {
 		for {
 			elapsed := time.Since(begin)
 			select {
-			case request, _ := <-multiplexer:
+			case request := <-multiplexer:
 				master.handleClientRequest(request)
 			case reply, ok := <-master.primaryIn:
 				// Get a server reply, and determine which session to send to.
@@ -196,6 +198,9 @@ func (master *Master) funnelRequests() chan<- string {
 					goto longsleep
 				}
 				master.handlePrimaryIn(reply)
+			case signal := <-signaler:
+				fmt.Println(signal, "received.")
+				master.shutdown()
 			default:
 				// Ping servers and make sure they're up.
 				if elapsed > utils.WAIT_PERIOD {
@@ -319,6 +324,13 @@ func (master *Master) waitForBackup() {
 		master.backupIn = in
 		master.backupOut = out
 	}
+}
+
+// Handles SIGINT and SIGKILL, shutting down gracefully.
+func (master *Master) handleSignals() <-chan os.Signal {
+	signaler := make(chan os.Signal, 1)
+	signal.Notify(signaler, os.Interrupt, os.Kill)
+	return signaler
 }
 
 // Client session: gets input from client and sends it to a channel to the master.
