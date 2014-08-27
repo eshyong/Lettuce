@@ -376,6 +376,5 @@ func (master *Master) shutdown() {
 	master.primary.Close()
 	master.backup.Close()
 
-	fmt.Println("Lettuce meat again.")
 	os.Exit(0)
 }

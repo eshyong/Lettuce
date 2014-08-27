@@ -2,6 +2,7 @@ package db
 
 import (
 	"bufio"
+	"container/list"
 	"fmt"
 	"log"
 	"os"
@@ -21,7 +22,7 @@ const (
 
 // Lookup table for function requests.
 var funcmap = map[string]func(args []string, store *Store) string{
-	// Atomic string operations.
+	// String operations.
 	"get":    getValue,
 	"set":    setValue,
 	"incr":   incr,
@@ -29,17 +30,27 @@ var funcmap = map[string]func(args []string, store *Store) string{
 	"decr":   decr,
 	"del":    del,
 
-	// Atomic list operations.
+	// List operations.
+	"lpush":  lpush,
+	"lpop":   lpop,
 	"rpush":  rpush,
 	"rpop":   rpop,
 	"llen":   llen,
 	"lrange": lrange,
+
+	// Hash operations.
+	"hset":    hset,
+	"hget":    hget,
+	"hlen":    hlen,
+	"hkeys":   hkeys,
+	"hvals":   hvals,
+	"hgetall": hgetall,
 }
 
 type Store struct {
 	stringStore map[string]string
 	hashStore   map[string]map[string]string
-	listStore   map[string][]string
+	listStore   map[string]*list.List
 	logs        []Record
 	lock        sync.Mutex
 }
@@ -50,7 +61,7 @@ type Record struct {
 }
 
 func NewStore() *Store {
-	store := &Store{listStore: make(map[string][]string),
+	store := &Store{listStore: make(map[string]*list.List),
 		hashStore:   make(map[string]map[string]string),
 		stringStore: make(map[string]string),
 		logs:        make([]Record, 0, INITIAL_LOG_CAPACITY),
@@ -101,12 +112,12 @@ func (store *Store) Execute(request string) string {
 	// Commands are case insensitive, but arguments are not.
 	args := strings.Split(request, " ")
 	function := strings.ToLower(args[0])
+
+	// Get function from map and run it with args.
 	exec, ok := funcmap[function]
 	if !ok {
 		return "ERR no such function"
 	}
-	// Keep a log of every passed transaction, and call the function.
-	// store.logRecord(request)
 	return exec(args[1:], store)
 }
 
@@ -267,23 +278,58 @@ func del(args []string, store *Store) string {
 	return "OK"
 }
 
+func lpush(args []string, store *Store) string {
+	if len(args) != 2 {
+		return "wrong number of arguments for \"LPUSH\", expected 2"
+	}
+	// Trim surrounding quotes.
+	name, item := strings.Trim(args[0], "\""), strings.Trim(args[1], "\"")
+
+	// Check if list is present, and create a new one if not.
+	l, present := store.listStore[name]
+	if !present {
+		l = list.New()
+	}
+	// Append to list and return length of list.
+	l.PushFront(item)
+	store.listStore[name] = l
+	return "(int) " + strconv.FormatInt(int64(l.Len()), 10)
+}
+
+func lpop(args []string, store *Store) string {
+	if len(args) != 1 {
+		return "wrong number of arguments for \"LPOP\", expected 1"
+	}
+
+	// Trim surrounding quotes.
+	name := strings.Trim(args[0], "\"")
+
+	// Check if list is present in store.
+	l, present := store.listStore[name]
+	if !present {
+		return "<nil>"
+	}
+	// Pop from list and return item.
+	item := l.Remove(l.Front()).(string)
+	return "\"" + item + "\""
+}
+
 func rpush(args []string, store *Store) string {
 	if len(args) != 2 {
 		return "wrong number of arguments for \"RPUSH\", expected 2"
 	}
 	// Trim surrounding quotes.
-	name := strings.Trim(args[0], "\"")
-	item := strings.Trim(args[1], "\"")
+	name, item := strings.Trim(args[0], "\""), strings.Trim(args[1], "\"")
 
 	// Check if list is present, and create a new one if not.
-	list, present := store.listStore[name]
+	l, present := store.listStore[name]
 	if !present {
-		list = make([]string, 0, INITIAL_LIST_CAPACITY)
+		l = list.New()
 	}
 	// Append to list and return length of list.
-	list = append(list, item)
-	store.listStore[name] = list
-	return "(int) " + strconv.FormatInt(int64(len(list)), 10)
+	l.PushBack(item)
+	store.listStore[name] = l
+	return "(int) " + strconv.FormatInt(int64(l.Len()), 10)
 }
 
 func rpop(args []string, store *Store) string {
@@ -295,34 +341,29 @@ func rpop(args []string, store *Store) string {
 	name := strings.Trim(args[0], "\"")
 
 	// Check if list is present in store.
-	list, present := store.listStore[name]
+	l, present := store.listStore[name]
 	if !present {
 		return "<nil>"
 	}
-	// Pop from list and return length of list.
-	item, list := list[len(list)-1], list[:len(list)-1]
-	if len(list) == 0 {
-		delete(store.listStore, name)
-	} else {
-		store.listStore[name] = list
-	}
+	// Pop from list and return item.
+	item := l.Remove(l.Back()).(string)
 	return "\"" + item + "\""
 }
 
 func llen(args []string, store *Store) string {
 	if len(args) != 1 {
-		return "wrong number of arguments for \"RPOP\", expected 1"
+		return "wrong number of arguments for \"LLEN\", expected 1"
 	}
 
 	// Trim surrounding quotes.
 	name := strings.Trim(args[0], "\"")
 
 	// Check if list is present in store.
-	list, present := store.listStore[name]
+	l, present := store.listStore[name]
 	if !present {
 		return "(int) 0"
 	}
-	return "(int) " + strconv.FormatInt(int64(len(list)), 10)
+	return "(int) " + strconv.FormatInt(int64(l.Len()), 10)
 }
 
 func lrange(args []string, store *Store) string {
@@ -334,7 +375,7 @@ func lrange(args []string, store *Store) string {
 	name := strings.Trim(args[0], "\"")
 
 	// Check if list is present in store
-	list, present := store.listStore[name]
+	l, present := store.listStore[name]
 	if !present {
 		return "empty list"
 	}
@@ -351,21 +392,129 @@ func lrange(args []string, store *Store) string {
 
 	// Read until end of the list if stop is negative.
 	if stop < 0 {
-		stop = int64(len(list))
+		stop = int64(l.Len())
 	}
 
 	// Start should be a positive integer.
 	if start < 0 {
 		return "start index must be positive"
 	}
-	if int(start) > len(list) {
+	if int(start) > l.Len() {
 		return "empty list"
 	}
 
 	// Print out each item of the list until stop, or the end of the list.
 	ret := ""
-	for i := start; i < stop; i++ {
-		ret = ret + strconv.FormatInt(i, 10) + ") " + list[i] + "\n"
+	for e, i := l.Front(), start; i < stop && e != nil; i, e = i+1, e.Next() {
+		ret = ret + "\"" + e.Value.(string) + "\", "
 	}
+	ret = ret[:len(ret)-2]
+	return ret
+}
+
+func hset(args []string, store *Store) string {
+	if len(args) != 3 {
+		return "wrong number of arguments for \"HSET\", expected 3"
+	}
+
+	ret, name := 1, strings.Trim(args[0], "\"")
+	hash, present := store.hashStore[name]
+	if !present {
+		hash = make(map[string]string)
+	}
+
+	key, val := strings.Trim(args[1], "\""), strings.Trim(args[2], "\"")
+	_, present = hash[key]
+	if present {
+		ret = 0
+	}
+	hash[key] = val
+	store.hashStore[name] = hash
+	return "(int) " + strconv.FormatInt(int64(ret), 10)
+}
+
+func hget(args []string, store *Store) string {
+	if len(args) != 2 {
+		return "wrong number of arguments for \"HGET\", expected 3"
+	}
+
+	name := strings.Trim(args[0], "\"")
+	hash, present := store.hashStore[name]
+	if !present {
+		return "<nil>"
+	}
+
+	key := strings.Trim(args[1], "\"")
+	val, present := hash[key]
+	if !present {
+		return "<nil>"
+	}
+	return "\"" + val + "\""
+}
+
+func hlen(args []string, store *Store) string {
+	if len(args) != 1 {
+		return "wrong number of arguments for \"HLEN\", expected 3"
+	}
+
+	name := strings.Trim(args[0], "\"")
+	hash, present := store.hashStore[name]
+	if !present {
+		return "(int) 0"
+	}
+	return strconv.FormatInt(int64(len(hash)), 10)
+}
+
+func hkeys(args []string, store *Store) string {
+	if len(args) != 1 {
+		return "wrong number of arguments for \"HKEYS\", expected 1"
+	}
+
+	name := strings.Trim(args[0], "\"")
+	hash, present := store.hashStore[name]
+	if !present {
+		return "empty hash"
+	}
+	ret := ""
+	for key, _ := range hash {
+		ret = ret + "\"" + key + "\", "
+	}
+	ret = ret[:len(ret)-2]
+	return ""
+}
+
+func hvals(args []string, store *Store) string {
+	if len(args) != 1 {
+		return "wrong number of arguments for \"HVALS\", expected 1"
+	}
+
+	name := strings.Trim(args[0], "\"")
+	hash, present := store.hashStore[name]
+	if !present {
+		return "empty hash"
+	}
+	ret := ""
+	for _, val := range hash {
+		ret = ret + "\"" + val + "\", "
+	}
+	ret = ret[:len(ret)-2]
+	return ""
+}
+
+func hgetall(args []string, store *Store) string {
+	if len(args) != 1 {
+		return "wrong number of arguments for \"HGETALL\", expected 1"
+	}
+
+	name := strings.Trim(args[0], "\"")
+	hash, present := store.hashStore[name]
+	if !present {
+		return "empty hash"
+	}
+	ret := ""
+	for key, val := range hash {
+		ret = ret + "\"" + key + "->" + val + "\", "
+	}
+	ret = ret[:len(ret)-2]
 	return ret
 }
