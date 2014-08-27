@@ -35,12 +35,16 @@ func NewServer() *Server {
 }
 
 func (server *Server) ConnectToMaster() {
-	/* master, err := readConfig()
+	/* Uncomment these lines to connect to master using a config file.
+	masterAddr, err := readConfig()
 	if err != nil {
 		log.Fatal(err)
-	} */
-	// Connect to the master server.
-	conn, err := net.DialTimeout("tcp", utils.LOCALHOST+utils.DELIMITER+utils.SERVER_PORT, utils.TIMEOUT)
+	}
+	masterAddr = masterAddr + utils.DELIMITER + utils.SERVER_PORT */
+
+	// Connect to the master server. (LOCALHOST for testing)
+	masterAddr := utils.LOCALHOST + utils.DELIMITER + utils.SERVER_PORT
+	conn, err := net.DialTimeout("tcp", masterAddr, utils.TIMEOUT)
 	if err != nil {
 		log.Fatal("Could not connect to master ", err)
 	}
